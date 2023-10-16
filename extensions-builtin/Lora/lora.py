@@ -2,11 +2,14 @@ import glob
 import os
 import re
 import torch
+import time
 from typing import Union
+from collections import OrderedDict
 
 from modules import shared, devices, sd_models, errors, scripts, sd_hijack, hashes
 
-metadata_tags_order = {"ss_sd_model_name": 1, "ss_resolution": 2, "ss_clip_skip": 3, "ss_num_train_images": 10, "ss_tag_frequency": 20}
+metadata_tags_order = {"ss_sd_model_name": 1, "ss_resolution": 2, "ss_clip_skip": 3, "ss_num_train_images": 10,
+                       "ss_tag_frequency": 20}
 
 re_digits = re.compile(r"\d+")
 re_x_proj = re.compile(r"(.*)_([qkv]_proj)$")
@@ -56,7 +59,7 @@ def convert_diffusers_name_to_compvis(key, is_sd2):
         return f"diffusion_model_input_blocks_{3 + m[0] * 3}_0_op"
 
     if match(m, r"lora_unet_up_blocks_(\d+)_upsamplers_0_conv"):
-        return f"diffusion_model_output_blocks_{2 + m[0] * 3}_{2 if m[0]>0 else 1}_conv"
+        return f"diffusion_model_output_blocks_{2 + m[0] * 3}_{2 if m[0] > 0 else 1}_conv"
 
     if match(m, r"lora_te_text_model_encoder_layers_(\d+)_(.+)"):
         if is_sd2:
@@ -92,7 +95,8 @@ class LoraOnDisk:
 
             self.metadata = m
 
-        self.ssmd_cover_images = self.metadata.pop('ssmd_cover_images', None)  # those are cover images and they are too big to display in UI as text
+        self.ssmd_cover_images = self.metadata.pop('ssmd_cover_images',
+                                                   None)  # those are cover images and they are too big to display in UI as text
         self.alias = self.metadata.get('ss_output_name', self.name)
 
         self.hash = None
@@ -203,10 +207,17 @@ def load_lora(name, lora_on_disk):
             module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], (1, 1), bias=False)
         elif type(sd_module) == torch.nn.Conv2d and weight.shape[2:] == (3, 3):
             module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], (3, 3), bias=False)
+        elif "dummy_class" in str(type(sd_module)) and weight.shape[2:] == (1, 1):
+            module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], (1, 1), bias=False)
+        elif "dummy_class" in str(type(sd_module)) and weight.shape[2:] == (3, 3):
+            module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], (3, 3), bias=False)
+        elif "dummy_class" in str(type(sd_module)) and len(weight.shape) == 2:
+            module = torch.nn.Linear(weight.shape[1], weight.shape[0], bias=False)
         else:
             print(f'Lora layer {key_diffusers} matched a layer with unsupported type: {type(sd_module).__name__}')
             continue
-            raise AssertionError(f"Lora layer {key_diffusers} matched a layer with unsupported type: {type(sd_module).__name__}")
+            raise AssertionError(
+                f"Lora layer {key_diffusers} matched a layer with unsupported type: {type(sd_module).__name__}")
 
         with torch.no_grad():
             module.weight.copy_(weight)
@@ -218,12 +229,48 @@ def load_lora(name, lora_on_disk):
         elif lora_key == "lora_down.weight":
             lora_module.down = module
         else:
-            raise AssertionError(f"Bad Lora layer name: {key_diffusers} - must end in lora_up.weight, lora_down.weight or alpha")
+            raise AssertionError(
+                f"Bad Lora layer name: {key_diffusers} - must end in lora_up.weight, lora_down.weight or alpha")
 
     if len(keys_failed_to_match) > 0:
         print(f"Failed to match keys when loading Lora {lora_on_disk.filename}: {keys_failed_to_match}")
 
     return lora
+
+
+class LoRaWeightCacheLRU(object):
+    def __init__(self, max_cache_num=0):
+        self.max_cache_num = max_cache_num
+        print(f"use {max_cache_num} lora caches")
+        self.cached_loras_map = OrderedDict()
+        self.change_time_loras_map = OrderedDict()
+
+    def get_lora_and_refresh_LRU(self, name, lora_on_disk):
+        """
+        Return lora and refresh LRU
+        """
+        change_time = os.path.getmtime(lora_on_disk.filename)
+
+        if name in self.cached_loras_map and change_time == self.change_time_loras_map.get(lora_on_disk, None):
+            lora_data = self.cached_loras_map[name]
+        else:
+            lora_data = load_lora(name, lora_on_disk)
+
+        self.change_time_loras_map[lora_on_disk] = change_time
+
+        while len(self.cached_loras_map) >= max(self.max_cache_num, 1):
+            print(f"len(self.cached_loras_map) is {len(self.cached_loras_map)}")
+            self.cached_loras_map.popitem(last=False)
+
+        if len(self.cached_loras_map) < self.max_cache_num:
+            self.cached_loras_map[name] = lora_data
+
+        return lora_data
+
+    def set_max_cache_num(self, max_cache_num):
+        self.cached_loras_map.clear()
+        self.change_time_loras_map.clear()
+        self.max_cache_num = max_cache_num
 
 
 def load_loras(names, multipliers=None):
@@ -232,6 +279,10 @@ def load_loras(names, multipliers=None):
     for lora in loaded_loras:
         if lora.name in names:
             already_loaded[lora.name] = lora
+    if hasattr(shared.sd_model.model, 'need_reload_lora'):
+        if shared.sd_model.model.need_reload_lora() and hasattr(shared.sd_model, "lora_layer_mapping"):
+            del shared.sd_model.lora_layer_mapping
+            already_loaded.clear()
 
     loaded_loras.clear()
 
@@ -319,7 +370,8 @@ def lora_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.Mu
     weights_backup = getattr(self, "lora_weights_backup", None)
     if weights_backup is None:
         if isinstance(self, torch.nn.MultiheadAttention):
-            weights_backup = (self.in_proj_weight.to(devices.cpu, copy=True), self.out_proj.weight.to(devices.cpu, copy=True))
+            weights_backup = (
+            self.in_proj_weight.to(devices.cpu, copy=True), self.out_proj.weight.to(devices.cpu, copy=True))
         else:
             weights_backup = self.weight.to(devices.cpu, copy=True)
 
@@ -382,7 +434,8 @@ def lora_forward(module, input, original_forward):
         module.up.to(device=devices.device)
         module.down.to(device=devices.device)
 
-        res = res + module.up(module.down(input)) * lora.multiplier * (module.alpha / module.up.weight.shape[1] if module.alpha else 1.0)
+        res = res + module.up(module.down(input)) * lora.multiplier * (
+            module.alpha / module.up.weight.shape[1] if module.alpha else 1.0)
 
     return res
 
@@ -509,6 +562,7 @@ available_lora_aliases = {}
 available_lora_hash_lookup = {}
 forbidden_lora_aliases = {}
 loaded_loras = []
+lora_cache = LoRaWeightCacheLRU(max_cache_num=getattr(shared.opts, "lora_cache_nums", 8))
 
 
 def set_available_loras(files):
@@ -538,5 +592,3 @@ def set_available_loras(files):
 
 
 list_available_loras()
-
-

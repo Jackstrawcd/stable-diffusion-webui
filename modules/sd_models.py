@@ -315,12 +315,34 @@ def load_model_weights(model, checkpoint_info: CheckpointInfo, state_dict, timer
 
     timer.record("ready apply weights to model")
     model.load_state_dict(state_dict, strict=False)
-    del state_dict
+    if hasattr(shared.opts,
+               'use_aiacctorch') and shared.opts.use_aiacctorch:
+        if hasattr(model.model, "diffusion_model") and "aiacc" in str(type(model.model.diffusion_model)):
+            unet_weight = dict([(x.split("model.diffusion_model.")[1], y) for x, y in state_dict.items() if
+                                x.startswith("model.diffusion_model.")])
+            # if not have weight, just use old weight
+            if len(unet_weight) == 0:
+                unet_weight = dict([(x.split("model.diffusion_model.")[1], y) for x, y in model.state_dict().items() if
+                                    x.startswith("model.diffusion_model.")])
+            if len(unet_weight) == 0:
+                print(f"skip load for aiacc, because the model is broken")
+            elif not model.model.diffusion_model.reload_weight_with_name(checkpoint_info.title, unet_weight):
+                print(f"aiacc falled to reload model {checkpoint_info.title}")
+                model = load_model(checkpoint_info, already_loaded_state_dict=state_dict)
     timer.record("apply weights to model")
 
     if shared.opts.sd_checkpoint_cache > 0:
         # cache newly loaded model
-        checkpoints_loaded[checkpoint_info] = model.state_dict().copy()
+        if shared.opts.data.get("use_aiacctorch_only", False):
+            checkpoints_loaded[checkpoint_info] = model.state_dict().copy()
+            # insert weight to enable model config change
+            if 'model.diffusion_model.input_blocks.0.0.weight' in state_dict:
+                checkpoints_loaded[checkpoint_info]['model.diffusion_model.input_blocks.0.0.weight'] = state_dict[
+                    'model.diffusion_model.input_blocks.0.0.weight']
+        else:
+            checkpoints_loaded[checkpoint_info] = dict(
+                [(k, v.cuda().half().cpu()) if v.dtype != torch.half else (k, v.cpu()) for k, v in state_dict.items()])
+    del state_dict
 
     if shared.cmd_opts.opt_channelslast:
         model.to(memory_format=torch.channels_last)
@@ -472,7 +494,7 @@ class SdModelData:
 model_data = SdModelData()
 
 
-def load_model(checkpoint_info=None, already_loaded_state_dict=None):
+def load_model(checkpoint_info=None, already_loaded_state_dict=None, use_callback=True):
     from modules import lowvram, sd_hijack
     checkpoint_info = checkpoint_info or select_checkpoint()
 
@@ -518,6 +540,11 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
 
     timer.record("create model")
 
+    if shared.cmd_opts.lowvram or shared.cmd_opts.medvram:
+        lowvram.setup_for_low_vram(sd_model, shared.cmd_opts.medvram)
+    else:
+        sd_model.to(shared.device)
+
     load_model_weights(sd_model, checkpoint_info, state_dict, timer)
 
     if shared.cmd_opts.lowvram or shared.cmd_opts.medvram:
@@ -539,8 +566,8 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
         force_reload=True)  # Reload embeddings after model load as they may or may not fit the model
 
     timer.record("load textual inversion embeddings")
-
-    script_callbacks.model_loaded_callback(sd_model)
+    if use_callback:
+        script_callbacks.model_loaded_callback(sd_model)
 
     timer.record("scripts callbacks")
 
@@ -572,7 +599,12 @@ def reload_model_weights(sd_model=None, info=None):
 
     timer = Timer()
 
-    state_dict = get_checkpoint_state_dict(checkpoint_info, timer)
+    try:
+        state_dict = get_checkpoint_state_dict(checkpoint_info, timer)
+    except Exception as e:
+        print(f"failed to get_checkpoint_state_dict because of {get_checkpoint_state_dict}")
+        sd_model.to(devices.get_optimal_device())
+        raise e
 
     checkpoint_config = sd_models_config.find_checkpoint_config(state_dict, checkpoint_info)
 
