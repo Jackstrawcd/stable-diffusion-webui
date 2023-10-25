@@ -565,6 +565,7 @@ class Img2ImgTaskHandler(TaskHandler):
         yield progress
 
         shared.state.begin()
+        inference_start = time.time()
         # shared.state.job_count = process_args.n_iter * process_args.batch_size
 
         if process_args.is_batch:
@@ -585,6 +586,7 @@ class Img2ImgTaskHandler(TaskHandler):
                 processed = process_images(process_args)
         shared.state.end()
         process_args.close()
+        inference_time = int(time.time() - inference_start)
 
         progress.status = TaskStatus.Uploading
         yield progress
@@ -595,7 +597,7 @@ class Img2ImgTaskHandler(TaskHandler):
                                        process_args.outpath_scripts,
                                        task.id,
                                        inspect=process_args.kwargs.get("need_audit", False))
-
+        images.update({'inference_time': inference_time})
         progress = TaskProgress.new_finish(task, images)
         progress.update_seed(processed.all_seeds, processed.all_subseeds)
 
