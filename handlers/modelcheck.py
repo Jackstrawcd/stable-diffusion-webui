@@ -25,20 +25,20 @@ class CheckResult(SerializationObj):
         self.model_type = model_type
 
 
-def load_pt_file(file):
-    state_dict = torch.load(file, map_location="cpu")
-    return state_dict
-
-
-def load_ckpt_file(file):
-    checkpoint = torch.load(file, map_location="cpu")
-    state_dict = checkpoint['state_dict']
-    return state_dict
-
-
-def load_safetensors_file(file):
-    sd = load_file(file)
-    return sd
+# def load_pt_file(file):
+#     state_dict = torch.load(file, map_location="cpu")
+#     return state_dict
+#
+#
+# def load_ckpt_file(file):
+#     checkpoint = torch.load(file, map_location="cpu")
+#     state_dict = checkpoint['state_dict']
+#     return state_dict
+# 
+#
+# def load_safetensors_file(file):
+#     sd = load_file(file)
+#     return sd
 
 
 def base_model_version(keys, lora_modules_num, all_modules_num) -> typing.Optional[CheckResult]:
@@ -134,14 +134,23 @@ class ModelCheckTaskHandler(Txt2ImgTaskHandler):
             logger.info(f"loading: {base_model}")
             ex = os.path.splitext(base_model)[-1].lower()
 
+            # if ex == ".safetensors":
+            #     sd = load_safetensors_file(base_model)
+            # elif ex == ".ckpt":
+            #     sd = load_ckpt_file(base_model)
+            # elif ex == ".pt":
+            #     sd = load_pt_file(base_model)
+            # else:
+            #     raise Exception("unknown file type")
+
             if ex == ".safetensors":
-                sd = load_safetensors_file(base_model)
-            elif ex == ".ckpt":
-                sd = load_ckpt_file(base_model)
-            elif ex == ".pt":
-                sd = load_pt_file(base_model)
+                sd = load_file(base_model)
             else:
-                raise Exception("unknown file type")
+                sd = torch.load(base_model, map_location="cpu")
+                if "state_dict" in sd:
+                    sd = sd["state_dict"]
+                else:
+                    sd = sd
 
         except Exception as e:
             task_desc = f'"无法识别的文件名后缀或模型无法正常加载" {e}'
