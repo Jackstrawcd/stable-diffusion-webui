@@ -34,7 +34,7 @@ class CheckResult(SerializationObj):
 #     checkpoint = torch.load(file, map_location="cpu")
 #     state_dict = checkpoint['state_dict']
 #     return state_dict
-# 
+#
 #
 # def load_safetensors_file(file):
 #     sd = load_file(file)
@@ -81,10 +81,10 @@ def base_model_version(keys, lora_modules_num, all_modules_num) -> typing.Option
     # # todo: 是否缺失1.5版本VAE
     elif first_stage_count == 0:
         if lora_modules_num != 0:
-            if lora_modules_num <= 700:
+            if lora_modules_num <= 1050:
                 res = CheckResult(SdModelVer.SD15, ModelType.Lora)
                 logger.debug("该模型为基于sd1.5 lora模型")
-            elif lora_modules_num > 700:
+            elif lora_modules_num > 1050:
                 res = CheckResult(SdModelVer.SDXL, ModelType.Lora)
                 logger.debug("该模型为基于XL lora模型")
         else:
@@ -163,7 +163,7 @@ class ModelCheckTaskHandler(Txt2ImgTaskHandler):
             keys = list(sd.keys())
 
             for key in keys:
-                if "lora_up" in key or "lora_down" in key:
+                if "lora" in key:
                     values.append((key, sd[key]))
             lora_modules_num = len(values)
             logger.info(f"number of LoRA modules: {lora_modules_num}")
