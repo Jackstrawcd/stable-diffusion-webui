@@ -41,7 +41,7 @@ class CheckResult(SerializationObj):
 #     return sd
 
 
-def base_model_version(keys, lora_modules_num, all_modules_num) -> typing.Optional[CheckResult]:
+def base_model_version(keys, lora_modules_num, all_modules_num, hada_modules_num, kronecker_modules_num) -> typing.Optional[CheckResult]:
     first_stage_count = 0
     cond_stage_count = 0
     diffusion_model_count = 0
@@ -81,12 +81,28 @@ def base_model_version(keys, lora_modules_num, all_modules_num) -> typing.Option
     # # todo: 是否缺失1.5版本VAE
     elif first_stage_count == 0:
         if lora_modules_num != 0:
-            if lora_modules_num <= 1050:
+            if lora_modules_num <= 1750 and hada_modules_num != 0:
+                res = CheckResult(SdModelVer.SD15, ModelType.Lora)
+                logger.debug("该模型为基于sd1.5 loha模型")
+            elif lora_modules_num <= 1117 and kronecker_modules_num != 0:
+                res = CheckResult(SdModelVer.SD15, ModelType.Lora)
+                logger.debug("该模型为基于sd1.5 lokr模型")
+            elif lora_modules_num <= 1050 and hada_modules_num == 0 and kronecker_modules_num == 0:
                 res = CheckResult(SdModelVer.SD15, ModelType.Lora)
                 logger.debug("该模型为基于sd1.5 lora模型")
-            elif lora_modules_num > 1050:
+            elif lora_modules_num > 1750 and hada_modules_num != 0:
+                res = CheckResult(SdModelVer.SDXL, ModelType.Lora)
+                logger.debug("该模型为基于XL loha模型")
+            elif lora_modules_num > 1117 and kronecker_modules_num != 0:
+                res = CheckResult(SdModelVer.SDXL, ModelType.Lora)
+                logger.debug("该模型为基于XL lokr模型")
+            elif lora_modules_num > 1050 and hada_modules_num == 0 and kronecker_modules_num == 0:
                 res = CheckResult(SdModelVer.SDXL, ModelType.Lora)
                 logger.debug("该模型为基于XL lora模型")
+            elif lora_modules_num <= 232 and hada_modules_num == 0 and kronecker_modules_num == 0:
+                res = CheckResult(SdModelVer.SD15, ModelType.Lora)
+                logger.debug("该模型为基于sd1.5 lora模型")
+
         else:
             if all_modules_num == 6:
                 res = CheckResult(SdModelVer.SD15, ModelType.Embedding)
@@ -168,12 +184,26 @@ class ModelCheckTaskHandler(Txt2ImgTaskHandler):
             lora_modules_num = len(values)
             logger.info(f"number of LoRA modules: {lora_modules_num}")
 
+            hada_list = []
+            for key in keys:
+                if "hada" in key:
+                    hada_list.append((key, sd[key]))
+            hada_modules_num = len(hada_list)
+            print(f"number of Hada modules: {hada_modules_num}")
+
+            kronecker_list = []
+            for key in keys:
+                if "lokr" in key:
+                    kronecker_list.append((key, sd[key]))
+            kronecker_modules_num = len(kronecker_list)
+            print(f"number of LoKr modules: {kronecker_modules_num}")
+
             for key in [k for k in keys if k not in values]:
                 values.append((key, sd[key]))
             all_modules_num = len(values)
             logger.info(f"number of all modules: {all_modules_num}")
 
-            r = base_model_version(keys, lora_modules_num, all_modules_num)
+            r = base_model_version(keys, lora_modules_num, all_modules_num, hada_modules_num, kronecker_modules_num)
             result = r.to_dict() if r else {}
 
             progress.set_finish_result(result)
