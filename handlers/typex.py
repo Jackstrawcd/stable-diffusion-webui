@@ -224,7 +224,8 @@ class ImageOutput:
                         if ex != ".gif":
                             low_number = 1 + low_number
                     if low_number != high_number:
-                        raise OSError("upload image failed.")
+                        logger.error(f'low_keys:{low_keys},high_keys:{high_keys}')
+                        raise OSError(f"upload image failed,low_number != high_number,low_number:{low_number},high_number:{high_number}")
 
                 return ImageKeys(high_keys, low_keys)
 
