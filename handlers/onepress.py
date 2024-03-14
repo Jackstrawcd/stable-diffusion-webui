@@ -1307,6 +1307,7 @@ class OnePressTaskHandler(Txt2ImgTaskHandler):
             processed = process_images(process_args)
             all_imgs.append( processed.images[0])
             progress.eta_relative = (idex+1)/len(img_batch)*100 # 加上后面抠图和贴背景的时间
+            progress.task_progress=(idex+1)/len(img_batch)*100
             yield progress
         shared.state.end()
         process_args.close()
