@@ -456,11 +456,12 @@ class ClothesRepairTaskHandler(Txt2ImgTaskHandler):
     def __init__(self):
         super(ClothesRepairTaskHandler, self).__init__()
         self.task_type = TaskType.ClothesRepair
+        self.register((ClothesRepairTaskType.RepairAction, self._exec_ClothesRepair))
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        # 根据任务的不同类型：执行不同的任务
-        if task.minor_type == ClothesRepairTaskType.RepairAction:
-            yield from self._exec_ClothesRepair(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     # 根据任务的不同类型：执行不同的任务
+    #     if task.minor_type == ClothesRepairTaskType.RepairAction:
+    #         yield from self._exec_ClothesRepair(task)
 
     def _exec_ClothesRepair(self, task: Task) -> typing.Iterable[TaskProgress]:
 

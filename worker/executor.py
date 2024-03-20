@@ -52,8 +52,10 @@ class TaskExecutor(Thread):
         self.__stop = True
 
     def can_exec_task(self, task: Task) -> bool:
-        types = self._handlers.keys()
-        return task.task_type in types
+        handler = self._handlers.get(task.task_type)
+        if not handler:
+            return False
+        return handler.can_do(task)
 
     def add_handler(self, *handlers: TaskHandler):
         for handler in handlers:

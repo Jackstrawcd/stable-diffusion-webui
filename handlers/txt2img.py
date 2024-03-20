@@ -197,6 +197,10 @@ class Txt2ImgTaskHandler(Img2ImgTaskHandler):
     def __init__(self):
         super(Txt2ImgTaskHandler, self).__init__()
         self.task_type = TaskType.Txt2Image
+        self.register(
+            (Txt2ImgMinorTaskType.Txt2Img, self._exec_txt2img),
+            (Txt2ImgMinorTaskType.RunControlnetAnnotator, exec_control_net_annotator)
+        )
 
     def _load_default_script_args(self):
         self.default_script_args = init_default_script_args(modules.scripts.scripts_txt2img)
@@ -294,9 +298,9 @@ class Txt2ImgTaskHandler(Img2ImgTaskHandler):
 
         yield progress
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        minor_type = Txt2ImgMinorTaskType(task.minor_type)
-        if minor_type <= Txt2ImgMinorTaskType.Txt2Img:
-            yield from self._exec_txt2img(task)
-        elif minor_type == Txt2ImgMinorTaskType.RunControlnetAnnotator:
-            yield from exec_control_net_annotator(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     minor_type = Txt2ImgMinorTaskType(task.minor_type)
+    #     if minor_type <= Txt2ImgMinorTaskType.Txt2Img:
+    #         yield from self._exec_txt2img(task)
+    #     elif minor_type == Txt2ImgMinorTaskType.RunControlnetAnnotator:
+    #         yield from exec_control_net_annotator(task)

@@ -24,14 +24,18 @@ class VideoRenditionTaskHandler(Txt2ImgTaskHandler):
     def __init__(self):
         super(VideoRenditionTaskHandler, self).__init__()
         self.task_type = TaskType.VideoRendition
+        self.register(
+            (VideoRenditionTaskType.Rendition, self._exec_rendition),
+            (VideoRenditionTaskType.SwapFace, self._exec_swapface)
+        )
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        # 根据任务的不同类型：执行不同的任务
-        if task.minor_type == VideoRenditionTaskType.Rendition:
-            # yield from self._exec_rendition(task)
-            yield from self._exec_rendition(task)
-        if task.minor_type == VideoRenditionTaskType.SwapFace:
-            yield from self._exec_swapface(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     # 根据任务的不同类型：执行不同的任务
+    #     if task.minor_type == VideoRenditionTaskType.Rendition:
+    #         # yield from self._exec_rendition(task)
+    #         yield from self._exec_rendition(task)
+    #     if task.minor_type == VideoRenditionTaskType.SwapFace:
+    #         yield from self._exec_swapface(task)
 
     def _exec_rendition(self, task: Task) -> typing.Iterable[TaskProgress]:
 
