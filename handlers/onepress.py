@@ -197,8 +197,9 @@ class OnePressTaskType(Txt2ImgTask):
     ImgToGif = 3  # 静态图片转动图
     ArtWord = 4  # 艺术字
     LaternFair = 5  # 灯会变身
-    SegImg = 6 # 抠图
-    KidDrawring=7 # 儿童画变灯笼
+    SegImg = 6  # 抠图
+    KidDrawring = 7  # 儿童画变灯笼
+
 
 class ConversionTask(Txt2ImgTask):
     def __init__(self,
@@ -768,6 +769,7 @@ class LaternFairTask(Txt2ImgTask):
 
         return padded_image
 
+
 class KidDrawingTask(Txt2ImgTask):
     def __init__(self,
                  images: List,  # 功能类型
@@ -775,6 +777,7 @@ class KidDrawingTask(Txt2ImgTask):
                  ):
         self.images = images
         self.args = args
+
     @classmethod
     def exec_task(cls, task: Task):
         t = KidDrawingTask(
@@ -787,42 +790,51 @@ class KidDrawingTask(Txt2ImgTask):
         # full_task.pop("images")
         full_task.update(extra_args)
 
-        img_batch =[]
+        img_batch = []
         for img in t.images:
             img_batch.append(get_tmp_local_path(img))
         # lora拼接
-        lora_promts=""
-        for i in range(0,len(full_task['lora_list'])):
-            lora_hash,lora_weight=full_task['lora_list'][i]['hash'],full_task['lora_list'][i]['value']
-            lora_promt=f"<lora:{lora_hash}:{lora_weight}>,"
-            lora_promts+=lora_promt
+        lora_promts = ""
+        for i in range(0, len(full_task['lora_list'])):
+            lora_hash, lora_weight = full_task['lora_list'][i]['hash'], full_task['lora_list'][i]['value']
+            lora_promt = f"<lora:{lora_hash}:{lora_weight}>,"
+            lora_promts += lora_promt
 
-        return img_batch,full_task,lora_promts
+        return img_batch, full_task, lora_promts
 
 
 class OnePressTaskHandler(Txt2ImgTaskHandler):
     def __init__(self):
         super(OnePressTaskHandler, self).__init__()
         self.task_type = TaskType.OnePress
+        self.register(
+            (OnePressTaskType.Conversion, self._exec_conversion),
+            (OnePressTaskType.Rendition, self._exec_rendition),
+            (OnePressTaskType.ImgToGif, self._exec_img2gif),
+            (OnePressTaskType.ArtWord, self._exec_artword),
+            (OnePressTaskType.LaternFair, self._exec_laternfair),
+            (OnePressTaskType.SegImg, self._exec_segimage),
+            (OnePressTaskType.KidDrawring, self._exec_kiddrawing)
+        )
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        # 根据任务的不同类型：执行不同的任务
-        if task.minor_type == OnePressTaskType.Conversion:
-            yield from self._exec_conversion(task)
-        elif task.minor_type == OnePressTaskType.Rendition:
-            yield from self._exec_rendition(task)
-        elif task.minor_type == OnePressTaskType.ImgToGif:
-            yield from self._exec_img2gif(task)
-        elif task.minor_type == OnePressTaskType.ArtWord:
-            yield from self._exec_artword(task)
-        elif task.minor_type == OnePressTaskType.LaternFair:
-            yield from self._exec_laternfair(task)
-        elif task.minor_type == OnePressTaskType.SegImg:
-            yield from self._exec_segimage(task)
-        elif task.minor_type== OnePressTaskType.KidDrawring:
-            yield from self._exec_kiddrawing(task)
-        else:
-            raise Exception(f'TaskType {self.task_type}, minor_type {task.minor_type} does not exist')
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     # 根据任务的不同类型：执行不同的任务
+    #     if task.minor_type == OnePressTaskType.Conversion:
+    #         yield from self._exec_conversion(task)
+    #     elif task.minor_type == OnePressTaskType.Rendition:
+    #         yield from self._exec_rendition(task)
+    #     elif task.minor_type == OnePressTaskType.ImgToGif:
+    #         yield from self._exec_img2gif(task)
+    #     elif task.minor_type == OnePressTaskType.ArtWord:
+    #         yield from self._exec_artword(task)
+    #     elif task.minor_type == OnePressTaskType.LaternFair:
+    #         yield from self._exec_laternfair(task)
+    #     elif task.minor_type == OnePressTaskType.SegImg:
+    #         yield from self._exec_segimage(task)
+    #     elif task.minor_type == OnePressTaskType.KidDrawring:
+    #         yield from self._exec_kiddrawing(task)
+    #     else:
+    #         raise Exception(f'TaskType {self.task_type}, minor_type {task.minor_type} does not exist')
 
     def _build_gen_canny_i2i_args(self, t, processed: Processed):
         denoising_strength = 0.5
@@ -1233,14 +1245,14 @@ class OnePressTaskHandler(Txt2ImgTaskHandler):
         progress = TaskProgress.new_finish(task, images)
         progress.update_seed(processed.all_seeds, processed.all_subseeds)
         yield progress
-    
+
     def _exec_segimage(self, task: Task) -> typing.Iterable[TaskProgress]:
-        #输入：需要抠的图片
+        # 输入：需要抠的图片
         logger.info(f"onepress segimage beigin.....,{task['task_id']}")
         progress = TaskProgress.new_ready(
             task, f'get_local_file finished, run seg image...')
         yield progress
-        target_path=task['image']
+        target_path = task['image']
         logger.info(f"onepress segimage get_local_file.....,{target_path}")
         target_face = get_tmp_local_path(target_path)
         progress.status = TaskStatus.Running
@@ -1253,14 +1265,14 @@ class OnePressTaskHandler(Txt2ImgTaskHandler):
             progress.status = TaskStatus.Uploading
             current_date = datetime.datetime.now()
             formatted_date = current_date.strftime('%Y-%m-%d')
-            remoting,local=f'media/{formatted_date}/{os.path.basename(file_path)}',file_path
-            oss_key=push_local_path(remoting,local)
+            remoting, local = f'media/{formatted_date}/{os.path.basename(file_path)}', file_path
+            oss_key = push_local_path(remoting, local)
             yield progress
             progress = TaskProgress.new_finish(task, {
-                    "all": {
-                        "high": [oss_key]
-                    }
-                })
+                "all": {
+                    "high": [oss_key]
+                }
+            })
             progress.task_desc = f'onepress segimage task:{task.id} finished.'
             yield progress
 
@@ -1270,7 +1282,7 @@ class OnePressTaskHandler(Txt2ImgTaskHandler):
             yield progress
 
     def _exec_kiddrawing(self, task: Task) -> typing.Iterable[TaskProgress]:
-        img_batch,full_task,lora_promts = KidDrawingTask.exec_task(
+        img_batch, full_task, lora_promts = KidDrawingTask.exec_task(
             task)
         # 适配xl
         logger.info("laternfair kid drawing download model...")
@@ -1296,28 +1308,28 @@ class OnePressTaskHandler(Txt2ImgTaskHandler):
         yield progress
         logger.info("step 1, txt2img...")
         shared.state.begin()
-        all_imgs=[]
-        for idex,img in enumerate(img_batch):
-            pil_img=Image.open(img)
-            promt=shared.interrogator.interrogate(pil_img)
-            process_args.prompt="lamp,luminescence,Lamp group,Lantern Festival,lantern,"+promt+lora_promts
-            process_args.width=1653 if pil_img.size[0]>pil_img.size[1] else 1167
-            process_args.height=1167 if pil_img.size[0]>pil_img.size[1] else 1653
-            process_args.init_images=[pil_img]
+        all_imgs = []
+        for idex, img in enumerate(img_batch):
+            pil_img = Image.open(img)
+            promt = shared.interrogator.interrogate(pil_img)
+            process_args.prompt = "lamp,luminescence,Lamp group,Lantern Festival,lantern," + promt + lora_promts
+            process_args.width = 1653 if pil_img.size[0] > pil_img.size[1] else 1167
+            process_args.height = 1167 if pil_img.size[0] > pil_img.size[1] else 1653
+            process_args.init_images = [pil_img]
             processed = process_images(process_args)
-            all_imgs.append( processed.images[0])
-            progress.eta_relative = (idex+1)/len(img_batch)*100 # 加上后面抠图和贴背景的时间
-            progress.task_progress=(idex+1)/len(img_batch)*100
+            all_imgs.append(processed.images[0])
+            progress.eta_relative = (idex + 1) / len(img_batch) * 100  # 加上后面抠图和贴背景的时间
+            progress.task_progress = (idex + 1) / len(img_batch) * 100
             yield progress
         shared.state.end()
         process_args.close()
 
         logger.info("step 3, mosaic background main picture...")
 
-        processed.images=all_imgs
-        processed.index_of_end_image =len(processed.images)
-        processed.all_seeds += [1]*len(processed.images)
-        processed.all_subseeds += [1]*len(processed.images)
+        processed.images = all_imgs
+        processed.index_of_end_image = len(processed.images)
+        processed.all_seeds += [1] * len(processed.images)
+        processed.all_subseeds += [1] * len(processed.images)
         logger.info("step 3 > ok")
 
         logger.info("step 4, upload images...")

@@ -16,6 +16,23 @@ from loguru import logger
 from modules.devices import torch_gc, get_cuda_device_string
 from worker.k8s_health import write_healthy, system_exit
 from worker.task import Task, TaskProgress, TaskStatus, TaskType
+try:
+    from collections.abc import Iterable
+    from collections import defaultdict
+except ImportError:
+    from collections import defaultdict, Iterable
+
+RegisterMinorHandlerArg = typing.Tuple[int, typing.Callable]
+RegisterMinorHandlerArgWithArgs = typing.Tuple[int, typing.Callable, typing.Sequence]
+RegisterMinorHandlerArgWithKwargs = typing.Tuple[int, typing.Callable, typing.Mapping]
+RegisterMinorHandlerArgWithArgsKwargs = typing.Tuple[int, typing.Callable, typing.Sequence, typing.Mapping]
+
+RegisterMinorHandlerArgType = typing.Union[
+    RegisterMinorHandlerArg,
+    RegisterMinorHandlerArgWithArgs,
+    RegisterMinorHandlerArgWithKwargs,
+    RegisterMinorHandlerArgWithArgsKwargs
+]
 
 
 class TaskHandler:
@@ -23,13 +40,43 @@ class TaskHandler:
     def __init__(self, task_type: TaskType):
         self.task_type = task_type
         self.enable = True
+        self.minor_handlers = defaultdict(dict)
 
     def handle_task_type(self):
         return self.task_type
 
-    @abc.abstractmethod
     def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        raise NotImplementedError
+        meta = self._get_minor_handler(task.minor_type)
+        if not meta:
+            raise OSError(f'cannot found task minor type handler, type:{task.task_type}, minor:{task.minor_type}')
+
+        args = meta.get('args') or []
+        kwargs = meta.get('kwargs') or {}
+        func = meta['func']
+        args.insert(0, task)
+
+        yield from func(*args, **kwargs)
+
+    def _register_minor_handler_meta(self, v: RegisterMinorHandlerArgType):
+        f = v[1]
+        minor_type = int(v[0])
+        d = {
+            'func': f,
+            "minor_type": minor_type,
+        }
+
+        if len(v) > 2:
+            for i in range(1, 3):
+                x = v[-i]
+                if isinstance(x, dict):
+                    d['kwargs'] = x
+                elif isinstance(x, Iterable):
+                    d['args'] = x
+        self.minor_handlers[minor_type] = d
+
+    def _get_minor_handler(self, minor_type: int):
+        minor_type = minor_type if minor_type > 0 else 1
+        return self.minor_handlers.get(int(minor_type))
 
     def _set_task_status(self, p: TaskProgress):
         logger.info(f">>> task:{p.task.desc()}, status:{p.status.name}, desc:{p.task_desc}")
@@ -41,6 +88,9 @@ class TaskHandler:
             self._set_task_status(p)
         else:
             try:
+                if not self.can_do(task):
+                    raise OSError(f'handler({task.task_type}) unsupported minor type:{task.minor_type}')
+
                 p = TaskProgress.new_prepare(task, msg)
                 self._set_task_status(p)
                 for progress in self._exec(task):
@@ -91,6 +141,19 @@ class TaskHandler:
                     system_exit(free, total, coercive=True)
                 if 'BrokenPipeError' in str(ex):
                     pass
+
+    def register(self, *args: RegisterMinorHandlerArgType):
+        for item in args:
+            f = item[1]
+            if not callable(f):
+                raise ValueError('f can not callable')
+            self._register_minor_handler_meta(item)
+
+    def can_do(self, task: Task):
+        if task.task_type != self.task_type:
+            return False
+        h = self._get_minor_handler(task.minor_type)
+        return isinstance(h, dict)
 
     def close(self):
         pass

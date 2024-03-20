@@ -39,6 +39,7 @@ class RefineTaskHandler(Txt2ImgTaskHandler):
     def __init__(self):
         super(RefineTaskHandler, self).__init__()
         self.task_type = TaskType.RefineImage
+        self.register((RefineTaskType.GenRefineImage, self._exec_refine_image))
 
     def _build_gen_refine_arg(self, progress: TaskProgress) -> GenRefineImageTask:
         self._refresh_default_script_args()
@@ -128,10 +129,10 @@ class RefineTaskHandler(Txt2ImgTaskHandler):
 
             outs.extend(proc.images)
         return outs
-
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        if task.minor_type == RefineTaskType.GenRefineImage:
-            yield from self._exec_refine_image(task)
+    #
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     if task.minor_type == RefineTaskType.GenRefineImage:
+    #         yield from self._exec_refine_image(task)
 
     def _exec_refine_image(self, task: Task) -> typing.Iterable[TaskProgress]:
         base_model_path = self._get_local_checkpoint(task)

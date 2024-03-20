@@ -414,6 +414,7 @@ class Img2ImgTaskHandler(TaskHandler):
     def __init__(self):
         super(Img2ImgTaskHandler, self).__init__(TaskType.Image2Image)
         self._default_script_args_load_t = 0
+        self._register()
 
     def _refresh_default_script_args(self):
         if time.time() - self._default_script_args_load_t > 3600 * 4:
@@ -677,14 +678,14 @@ class Img2ImgTaskHandler(TaskHandler):
         time_since_start = time.time() - shared.state.time_start
         eta = (time_since_start / p)
         progress.task_progress = current_progress
-        fixed_eta = getattr(progress, "fixed_eta", 0) 
+        fixed_eta = getattr(progress, "fixed_eta", 0)
 
         # progress < 10不更新eta使用原有的eta
-        if  fixed_eta > 0 and current_progress > 10 and progress.eta_relative > 0:   
+        if fixed_eta > 0 and current_progress > 10 and progress.eta_relative > 0:
             progress.eta_relative = int(eta - time_since_start) + fixed_eta
         else:
-            progress.eta_relative = int(eta - time_since_start) 
-        # print(f"-> progress: {progress.task_progress}, real:{p}\n")
+            progress.eta_relative = int(eta - time_since_start)
+            # print(f"-> progress: {progress.task_progress}, real:{p}\n")
 
         shared.state.set_current_image()
         if shared.state.current_image:
@@ -720,11 +721,18 @@ class Img2ImgTaskHandler(TaskHandler):
             })
             yield progress
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        minor_type = Img2ImgMinorTaskType(task.minor_type)
-        if minor_type <= Img2ImgMinorTaskType.Img2Img:
-            yield from self._exec_img2img(task)
-        elif minor_type == Img2ImgMinorTaskType.RunControlnetAnnotator:
-            yield from exec_control_net_annotator(task)
-        elif minor_type == Img2ImgMinorTaskType.Interrogate:
-            yield from self._exec_interrogate(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     minor_type = Img2ImgMinorTaskType(task.minor_type)
+    #     if minor_type <= Img2ImgMinorTaskType.Img2Img:
+    #         yield from self._exec_img2img(task)
+    #     elif minor_type == Img2ImgMinorTaskType.RunControlnetAnnotator:
+    #         yield from exec_control_net_annotator(task)
+    #     elif minor_type == Img2ImgMinorTaskType.Interrogate:
+    #         yield from self._exec_interrogate(task)
+
+    def _register(self):
+        self.register(
+            (Img2ImgMinorTaskType.Img2Img, self._exec_img2img),
+            (Img2ImgMinorTaskType.RunControlnetAnnotator, exec_control_net_annotator),
+            (Img2ImgMinorTaskType.Interrogate, self._exec_interrogate)
+        )

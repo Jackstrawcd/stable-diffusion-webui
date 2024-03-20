@@ -227,11 +227,12 @@ class TaggerTaskHandler(DumpTaskHandler):
 
     def __init__(self):
         super(TaggerTaskHandler, self).__init__(TaskType.Tagger)
+        self.register((TaggerTaskMinorTaskType.SingleTagger, self.__exec_tagger_task))
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        minor_type = TaggerTaskMinorTaskType(task.minor_type)
-        if minor_type <= TaggerTaskMinorTaskType.SingleTagger:
-            yield from self.__exec_tagger_task(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     minor_type = TaggerTaskMinorTaskType(task.minor_type)
+    #     if minor_type <= TaggerTaskMinorTaskType.SingleTagger:
+    #         yield from self.__exec_tagger_task(task)
 
     def __exec_tagger_task(self, task: Task):
         #

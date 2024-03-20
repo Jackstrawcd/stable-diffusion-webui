@@ -31,6 +31,10 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
     def __init__(self):
         super(DigitalTaskHandler, self).__init__()
         self.task_type = TaskType.Digital
+        self.register(
+            (DigitalTaskType.Img2Img, self._exec_img2img),
+            (DigitalTaskType.Txt2Img, self._exec_txt2img)
+        )
 
     def _denoising_strengths(self, t: Task):
 
@@ -158,11 +162,11 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         return tasks
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        if task.minor_type == DigitalTaskType.Img2Img:
-            yield from self._exec_img2img(task)
-        elif task.minor_type == DigitalTaskType.Txt2Img:
-            yield from self._exec_txt2img(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     if task.minor_type == DigitalTaskType.Img2Img:
+    #         yield from self._exec_img2img(task)
+    #     elif task.minor_type == DigitalTaskType.Txt2Img:
+    #         yield from self._exec_txt2img(task)
 
     def _exec_img2img(self, task: Task) -> typing.Iterable[TaskProgress]:
         time_start = time.time()
