@@ -44,6 +44,11 @@ class TaskHandler:
                 p = TaskProgress.new_prepare(task, msg)
                 self._set_task_status(p)
                 for progress in self._exec(task):
+                    # 判断是不是重新执行，不再更新比上一次进度小的
+                    old_task_progress = progress.task.get('old_task_progress', 0)
+                    if progress.task_progress < old_task_progress:
+                        progress.task_progress = old_task_progress
+
 
                     self._set_task_status(progress)
                     if callable(progress_callback):

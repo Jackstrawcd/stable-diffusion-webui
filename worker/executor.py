@@ -37,6 +37,7 @@ class TaskExecutor(Thread):
         self.mutex = Lock()
         self.not_busy = Condition(self.mutex)
         self.queue = Queue(1)  # 也可直接使用变量进行消息传递。。
+        self.current_task = None  # TaskProgress
         name = name or 'task-executor'
         if train_only:
             logger.info("[executor] >>> run on train mode.")
@@ -78,6 +79,8 @@ class TaskExecutor(Thread):
     def task_progress(self, p: TaskProgress):
         if p.pre_task_completed():
             self.nofity()
+        # 更新全局任务状态
+        self.current_task = p
 
     def exec_task(self):
         write_healthy(True)
@@ -103,6 +106,8 @@ class TaskExecutor(Thread):
                     handler.set_failed(task, f'task time out(task create time:{create_time}, now:{now})')
                     self.nofity()
                     continue
+
+                self.current_task = TaskProgress.new_ready(task, "reading")
                 handler(task, progress_callback=self.task_progress)
 
             except queue.Empty:
