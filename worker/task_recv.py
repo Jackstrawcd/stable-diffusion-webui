@@ -30,7 +30,8 @@ from modules.shared import mem_mon as vram_mon
 from apscheduler.schedulers.background import BackgroundScheduler
 from tools.environment import get_run_train_time_cfg, get_worker_group, get_gss_count_api, run_train_ratio, \
     Env_Run_Train_Time_Start, Env_Run_Train_Time_End, is_flexible_worker, get_worker_state_dump_path, \
-    is_task_group_queue_only, get_maintain_env, get_env_group_queue_name
+    is_task_group_queue_only, get_maintain_env, get_env_group_queue_name, get_pod_status_env, set_pod_status_env
+from worker import graceful_exit
 
 try:
     from collections.abc import Iterable  # >=py3.10
@@ -355,11 +356,12 @@ class TaskReceiver:
         meta = rds.get(task_id)
         if meta:
             t = Task.from_json_str(meta)
+            #TODO 加任务类型判断
+
             if t.is_train:
                 paralle_count = t.get('paralle_count', 0)
                 if paralle_count > 0:
                     can_exec = self.can_exec_train_task(t.user_id, paralle_count)
-
                     if not can_exec:
                         delay = 0
                         logger.info(f"repush task {t.id} to {queue_name} and score:{task_score + delay}")
@@ -408,6 +410,22 @@ class TaskReceiver:
                     break
             except Exception as err:
                 logger.warning(f"cannot got cluster status:{err}")
+                break
+
+    def _check_pod_status(self):
+        '''
+        检测pod服务状态，如果 pod 正在退出，则停止获取任务
+        '''
+        while 1:
+            try:
+                status = get_pod_status_env()
+                if status == graceful_exit.TERMINATING_STATUS:
+                    logger.info(f" task receiver stop ...")
+                    time.sleep(10)
+                else:
+                    return
+            except Exception as err:
+                logger.warning(f"cannot got pod status:{err}")
                 break
 
     def _extract_queue_task(self, queue_name: str, retry: int = 1):
@@ -521,6 +539,7 @@ class TaskReceiver:
     def get_one_task(self, block: bool = True, sleep_time: float = 4) -> typing.Optional[Task]:
         while not self.closed:
             self._check_cluster_status()
+            self._check_pod_status()
             st = time.time()
             if self.train_only:
                 task = self._search_train_task()
@@ -543,6 +562,7 @@ class TaskReceiver:
         while not self.closed:
             try:
                 self._check_cluster_status()
+                self._check_pod_status()
                 st = time.time()
 
                 # 释放弹性资源，不再获取任务主动

@@ -196,3 +196,13 @@ def get_maintain_env():
 
 def get_ticket():
     return os.getenv(Env_Ticket, -1)
+
+
+def get_pod_status_env():
+    return os.getenv("POD_STATUS", None)
+
+
+def set_pod_status_env(status):
+    os.environ["POD_STATUS"] = status
+    return
+

@@ -44,6 +44,7 @@ class TaskHandler:
                 p = TaskProgress.new_prepare(task, msg)
                 self._set_task_status(p)
                 for progress in self._exec(task):
+
                     self._set_task_status(progress)
                     if callable(progress_callback):
                         progress_callback(progress)
