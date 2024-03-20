@@ -357,11 +357,6 @@ class TaskReceiver:
         if meta:
             t = Task.from_json_str(meta)
             t.setdefault("queue", queue_name)
-            #  任务类型判断,不能做的任务重新丢入队列
-            if t.task_type_Validate():
-                logger.info(f"invalid task type ({t.task_type}) or minor type({t.minor_type}). repush task {t.id} ")
-                self.repush_task(t.id, queue_name, task_score)
-                return
             if t.is_train:
                 paralle_count = t.get('paralle_count', 0)
                 if paralle_count > 0:
