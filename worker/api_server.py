@@ -104,15 +104,7 @@ class Api:
         logger.info("stop webui func call")
         set_pod_status_env(graceful_exit.TERMINATING_STATUS)
         graceful_exit.wait_event()
-        # # 获取当前进程的所有线程
-        # threads = threading.enumerate()
-
-        # # 打印当前进程的所有线程
-        # print("Current threads in the process:")
-        # for thread in threads:
-        #     print(thread.name)
-        th=threading.Thread(target=k8s_health._exit,name="exit thread")
-        th.start()
+        logger.info(f"response prestop ·····" )
         return Response("stop.")
 
 def create_sys_api_server():
