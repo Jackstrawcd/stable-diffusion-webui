@@ -99,6 +99,7 @@ class TaskHandler:
                     if progress.task_progress < old_task_progress:
                         progress.task_progress = old_task_progress
 
+
                     self._set_task_status(progress)
                     if callable(progress_callback):
                         progress_callback(progress)
