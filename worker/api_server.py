@@ -79,8 +79,8 @@ class Api:
         self.app = app
         api_middleware(self.app)
         self.add_api_route("/sysapi/v1/server-kill", self.kill, methods=["POST", "GET"])
-        self.add_api_route("/sysapi/v1/server-restart", self.restart, methods=["POST", "GET")
-        self.add_api_route("/sysapi/v1/server-stop", self.stop, methods=["POST", "GET")
+        self.add_api_route("/sysapi/v1/server-restart", self.restart, methods=["POST", "GET"])
+        self.add_api_route("/sysapi/v1/server-stop", self.stop, methods=["POST", "GET"])
         self.add_api_route("/sysapi/v1/server-health", self.health, methods=["GET"])
 
     def add_api_route(self, path: str, endpoint, **kwargs):
