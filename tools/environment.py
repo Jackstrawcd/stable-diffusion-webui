@@ -206,3 +206,9 @@ def set_pod_status_env(status):
     os.environ["POD_STATUS"] = status
     return
 
+def get_wait_task_env():
+    return os.getenv("WAIT_TASK", None)
+
+def set_wait_task_env(task_id):
+    os.environ["WAIT_TASK"] = task_id
+    return

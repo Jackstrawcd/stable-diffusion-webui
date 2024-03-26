@@ -290,10 +290,8 @@ class TaskReceiver:
     def _can_gener_img_worker_run_train(self, worker_id=None):
         # 默认23点~凌晨5点(UTC 15~21)可以运行TRAIN
         utc = datetime.utcnow()
-
         if self.run_train_time_start <= utc.hour < self.run_train_time_end:
             logger.info(f"worker receive train task")
-
             group_workers = self.get_group_workers()
             group_id = get_worker_group()
             workers = group_workers.get(group_id) or []
@@ -414,18 +412,18 @@ class TaskReceiver:
     def _check_pod_status(self):
         '''
         检测pod服务状态，如果 pod 正在退出，则停止获取任务
-        '''
-        while 1:
-            try:
-                status = get_pod_status_env()
-                if status == graceful_exit.TERMINATING_STATUS:
-                    logger.info(f"pod terminating, task receiver stop ...")
-                    time.sleep(10)
-                else:
-                    return
-            except Exception as err:
-                logger.warning(f"cannot got pod status:{err}")
-                break
+        '''            
+        status = get_pod_status_env()
+        if status == graceful_exit.TERMINATING_STATUS:
+            graceful_exit.set_event()
+            while 1 :
+                logger.info(f"pod terminating, task receiver stop ...")
+                time.sleep(10)
+        else:
+            return
+
+                
+
 
     def _extract_queue_task(self, queue_name: str, retry: int = 1):
         queue_name = queue_name.decode('utf8') if isinstance(queue_name, bytes) else queue_name

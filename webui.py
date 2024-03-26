@@ -11,8 +11,9 @@ from modules import initialize
 from modules import shared
 from modules.shared import cmd_opts
 from loguru import logger
-import signal
-from worker.graceful_exit import signal_handler
+
+from threading import Thread
+from worker.api_server import create_sys_api_server
 
 # 添加sd_scripts 主路径
 sys.path.append("sd_scripts")
@@ -258,15 +259,7 @@ def run_worker():
         return
 
     logger.debug("[WORKER] worker模式下需要保证config.json中配置controlnet unit限定5个")
-
     exec = run_executor(shared.sd_model_recorder, train_only=cmd_opts.train_only)
-
-    ##注册终止信号处理
-    def signal_rush(sig, frame):
-        signal_handler(exec)
-        exit(0)
-
-    signal.signal(signal.SIGTERM, signal_rush)
     exec.stop()
     dumper.stop()
 
@@ -287,6 +280,9 @@ def run_sd_webui():
     #     run_extensions_installers(os.path.join(data_path, 'config.json'))
 
     if cmd_opts.worker:
+        #api server thread
+        th=Thread(target=create_sys_api_server,name="sys api server thread")
+        th.start()
         run_worker()
     else:
         if cmd_opts.nowebui:

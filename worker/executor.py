@@ -21,9 +21,9 @@ from modules.devices import torch_gc
 from worker.task_recv import TaskReceiver, TaskTimeout
 from threading import Thread, Condition, Lock
 from tools.model_hist import CkptLoadRecorder
-from tools.environment import Env_DontCleanModels
+from tools.environment import Env_DontCleanModels,get_pod_status_env
 from worker.k8s_health import write_healthy, system_exit, process_health
-
+from worker import graceful_exit
 
 class TaskExecutor(Thread):
 
@@ -83,6 +83,12 @@ class TaskExecutor(Thread):
             self.nofity()
         # 更新全局任务状态
         self.current_task = p
+        status = get_pod_status_env()
+        if status == graceful_exit.TERMINATING_STATUS:
+            graceful_exit.is_wait_task(p)
+        else:
+            return
+        
 
     def exec_task(self):
         write_healthy(True)

@@ -11,7 +11,7 @@ import psutil
 from loguru import logger
 from ctypes import CDLL
 from ctypes.util import find_library
-
+from loguru import logger
 
 def write_healthy(status: bool):
     if status:
@@ -27,11 +27,12 @@ def write_healthy(status: bool):
 
 def _exit():
     logger.info(f"process exit after 20 seconds...")
-    # wait task dumper
-    time.sleep(10)
-    # for restart k8s pod
-    write_healthy(False)
-    time.sleep(10)
+    for i in range(20):
+        if i == 10 :
+            # for restart k8s pod
+            write_healthy(False)
+        logger.info(f"Exit in {20-i} seconds ")
+        time.sleep(1)
 
     # kill process
     libc = CDLL(find_library("libc"))
