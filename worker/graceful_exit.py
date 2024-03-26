@@ -33,7 +33,6 @@ def wait_event():
 def is_wait_task(current_task: TaskProgress):
     # 处理退出
     if current_task is None or current_task.status  in [TaskStatus.Finish, TaskStatus.Failed]:
-        logger.info("当前无任务执行，直接退出···")
         return 
     task_type = current_task.task.task_type
     task_progress = current_task.task_progress

@@ -79,15 +79,15 @@ class TaskExecutor(Thread):
             setattr(self.not_busy, "value", 0)
 
     def task_progress(self, p: TaskProgress):
-        if p.pre_task_completed():
-            self.nofity()
         # 更新全局任务状态
         self.current_task = p
-        status = get_pod_status_env()
-        if status == graceful_exit.TERMINATING_STATUS:
+        if get_pod_status_env() == graceful_exit.TERMINATING_STATUS:
             graceful_exit.is_wait_task(p)
+            if p.completed:
+                self.nofity()
         else:
-            return
+            if p.pre_task_completed():
+                self.nofity()
         
 
     def exec_task(self):
