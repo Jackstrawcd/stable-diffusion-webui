@@ -9,6 +9,7 @@ from worker.executor import TaskProgress
 from worker.task import TaskStatus
 import json
 from threading import Event
+from worker import k8s_health
 
 TERMINATING_STATUS = "terminating"
 RUNNING_STATUS = "running"
@@ -80,3 +81,7 @@ def push_task(current_task: TaskProgress, redis):
         logger.info("The thread is blocked, waiting for exit")
         time.sleep(10)
 
+def sigterm_handler(signal, frame):
+    logger.info('Received SIGTERM signal. Cleaning up and exiting...')
+    # 在这里执行清理操作
+    k8s_health._exit()

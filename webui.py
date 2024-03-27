@@ -11,7 +11,7 @@ from modules import initialize
 from modules import shared
 from modules.shared import cmd_opts
 from loguru import logger
-
+import signal
 from threading import Thread
 
 
@@ -263,6 +263,10 @@ def run_worker():
     from worker.api_server import create_sys_api_server
     th=Thread(target=create_sys_api_server,name="sys api server thread")
     th.start()
+    
+    from worker.graceful_exit import sigterm_handler
+    # 注册 SIGTERM 信号处理函数
+    signal.signal(signal.SIGTERM, sigterm_handler)
     exec = run_executor(shared.sd_model_recorder, train_only=cmd_opts.train_only)
     exec.stop()
     dumper.stop()
