@@ -24,8 +24,8 @@ class TrainTaskHandler(DumpTaskHandler):
         super(TrainTaskHandler, self).__init__(TaskType.Train)
         self.register(
             (TrainMinorTaskType.Preprocess, exec_preprocess_task),
-            (TrainMinorTaskType.Lora, exec_train_lora_task),
-            (TrainMinorTaskType.DigitalDoppelganger, digital_doppelganger),
+            (TrainMinorTaskType.Lora, exec_train_lora_task, [self.dump_task]),
+            (TrainMinorTaskType.DigitalDoppelganger, digital_doppelganger, [self.dump_task]),
         )
 
     def before_exec(self, task: Task, *args, **kwargs):
