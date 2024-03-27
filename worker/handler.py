@@ -55,7 +55,12 @@ class TaskHandler:
         func = meta['func']
         args.insert(0, task)
 
+        self.before_exec(task, *args, **kwargs)
+
         yield from func(*args, **kwargs)
+
+    def before_exec(self, task: Task, *args, **kwargs):
+        print(f"exec task:{task.id} ")
 
     def _register_minor_handler_meta(self, v: RegisterMinorHandlerArgType):
         f = v[1]
