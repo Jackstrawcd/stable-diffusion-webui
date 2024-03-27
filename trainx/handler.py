@@ -16,7 +16,8 @@ from trainx.typex import TrainMinorTaskType
 from modules.devices import torch_gc
 from tools import safety_clean_tmp
 from worker.dumper import MongoTaskDumper
-
+from worker import graceful_exit
+from tools.environment import get_pod_status_env
 
 class TrainTaskHandler(DumpTaskHandler):
 
@@ -36,5 +37,7 @@ class TrainTaskHandler(DumpTaskHandler):
 
     def dump_task(self, p):
         print(f"current pid:{os.getpid()}")
+        if get_pod_status_env() == graceful_exit.TERMINATING_STATUS:
+            graceful_exit.is_wait_task(p)
         with MongoTaskDumper() as dumper:
             dumper.dump_task_progress(p)
