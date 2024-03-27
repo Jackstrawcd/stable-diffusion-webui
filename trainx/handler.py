@@ -22,17 +22,27 @@ class TrainTaskHandler(DumpTaskHandler):
 
     def __init__(self):
         super(TrainTaskHandler, self).__init__(TaskType.Train)
+        self.register(
+            (TrainMinorTaskType.Preprocess, exec_preprocess_task),
+            (TrainMinorTaskType.Lora, exec_train_lora_task),
+            (TrainMinorTaskType.DigitalDoppelganger, digital_doppelganger),
+        )
 
-    def _exec(self, task: Task):
+    def before_exec(self, task: Task, *args, **kwargs):
         torch_gc()
         safety_clean_tmp(3600)
-        print(f"current pid:{os.getpid()}")
-        if task.minor_type == TrainMinorTaskType.Preprocess:
-            yield from exec_preprocess_task(task)
-        elif task.minor_type == TrainMinorTaskType.Lora:
-            yield from exec_train_lora_task(task, self.dump_task)
-        elif task.minor_type == TrainMinorTaskType.DigitalDoppelganger:
-            yield from digital_doppelganger(task, self.dump_task)
+
+    #
+    # def _exec(self, task: Task):
+    #     torch_gc()
+    #     safety_clean_tmp(3600)
+    #     print(f"current pid:{os.getpid()}")
+    #     if task.minor_type == TrainMinorTaskType.Preprocess:
+    #         yield from exec_preprocess_task(task)
+    #     elif task.minor_type == TrainMinorTaskType.Lora:
+    #         yield from exec_train_lora_task(task, self.dump_task)
+    #     elif task.minor_type == TrainMinorTaskType.DigitalDoppelganger:
+    #         yield from digital_doppelganger(task, self.dump_task)
 
     def dump_task(self, p):
         print(f"current pid:{os.getpid()}")
