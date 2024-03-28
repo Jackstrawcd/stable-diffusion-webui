@@ -11,7 +11,7 @@ from typing import List
 
 from loguru import logger
 from tools.environment import set_pod_status_env
-from worker import graceful_exit,k8s_health
+from worker import graceful_exit
 import threading
 
 

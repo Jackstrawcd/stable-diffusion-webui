@@ -62,7 +62,7 @@ def wait_task(current_task: TaskProgress):
     logger.info(f"wait task finish,task_id={current_task.task.id},process={current_task.task_progress}")
 
 
-def push_task(current_task: TaskProgress, redis):
+def push_task(current_task: TaskProgress):
     """
     添加任务到重放队列
     :param redis:
@@ -71,6 +71,8 @@ def push_task(current_task: TaskProgress, redis):
     :return:
     """
     # 任务ID添加到等待队列
+    redis_pool = RedisPool()
+    redis = redis_pool.get_connection() 
     redis.zadd(current_task.task.get("queue"), {current_task.task.id: current_task.task.create_at})
     old_task=current_task.task.json()
     redis.set(current_task.task.id,old_task)
