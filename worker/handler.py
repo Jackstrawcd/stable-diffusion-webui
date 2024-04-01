@@ -6,6 +6,7 @@
 # @File    : handler.py
 # @Software: Hifive
 import abc
+import copy
 import time
 import typing
 import traceback
@@ -50,8 +51,8 @@ class TaskHandler:
         if not meta:
             raise OSError(f'cannot found task minor type handler, type:{task.task_type}, minor:{task.minor_type}')
 
-        args = meta.get('args') or []
-        kwargs = meta.get('kwargs') or {}
+        args = copy.deepcopy(meta.get('args') or [])
+        kwargs = copy.deepcopy(meta.get('kwargs') or {})
         func = meta['func']
         args.insert(0, task)
 
