@@ -90,12 +90,14 @@ class OssFileStorage(FileStorage):
         # 分片上传
         headers = oss2.CaseInsensitiveDict()
         headers['Content-Type'] = self.mmie(local_path)
-        resp = self.bucket.put_object_from_file(key, local_path)
-
-        if resp.status < 300:
-            return remoting_path
-        else:
-            raise OSError(f'cannot download file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+        for i in range(3):
+            resp = self.bucket.put_object_from_file(key, local_path, headers=headers)
+            if resp.status < 300:
+                return remoting_path
+            elif i >= 2:
+                raise OSError(f'cannot upload file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+            else:
+                time.sleep(1)
 
     def upload_content(self, remoting_path, content) -> str:
         # bucket, key = self.extract_buack_key_from_path(remoting_path)
@@ -104,11 +106,14 @@ class OssFileStorage(FileStorage):
         # bucket = oss2.Bucket(self.auth, self.endpoint, bucket)
         # 分片上传
         headers = oss2.CaseInsensitiveDict()
-        resp = self.bucket.put_object(key, content, headers)
-        if resp.status < 300:
-            return remoting_path
-        else:
-            raise OSError(f'cannot download file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+        for i in range(3):
+            resp = self.bucket.put_object(key, content, headers)
+            if resp.status < 300:
+                return remoting_path
+            elif i >= 2:
+                raise OSError(f'cannot upload file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+            else:
+                time.sleep(1)
 
     def preview_url(self, remoting_path: str) -> str:
         # bucket, key = self.extract_buack_key_from_path(remoting_path)
