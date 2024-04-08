@@ -253,7 +253,10 @@ def get_wd_tagger(train_data_dir="", # 训练数据路径
                                                     add_confident_as_weight=False,replace_underscore=remove_underscore,
                                                     replace_underscore_excludes=[],escape_tag=False)
 
-        tag_text = ", ".join(post_tags)
+        # tag_text = ", ".join(post_tags)
+        tag_text = ",".join(post_tags)
+        if tag_text:  # 确保tag_text非空
+            tag_text = tag_text[1:]
 
         with open(os.path.splitext(path)[0] + caption_extension, "wt", encoding="utf-8") as f:
             f.write(tag_text + "\n")
