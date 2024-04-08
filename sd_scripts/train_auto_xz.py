@@ -1139,16 +1139,16 @@ def train_auto(
         pic_nums = len(contents)
 
     else:
-        pic_nums = len(contents) / 2
+        pic_nums = len(contents) // 2
 
     if pic_nums == 0:
         raise ValueError("No data: the empty dataset could be due to failure in correctly identifying the person, "
                         "presence of multiple individuals in the image, low recognition accuracy, "
                         "or non-human subjects")
 
-    max_repeats = 30
-    min_repeats = 15
-    repeats_n = max(min(int(20 * max_repeats / pic_nums), max_repeats), min_repeats)
+    # max_repeats = 30
+    # min_repeats = 15
+    # repeats_n = max(min(int(20 * max_repeats / pic_nums), max_repeats), min_repeats)
     # repeats_n = 30
     # 2.tagger反推
     if use_wd:
@@ -1173,7 +1173,7 @@ def train_auto(
     # 判断性别
     gender = '1girl' if num_boys > num_girls else '1boy'
     print(f">>>>>> gender:{gender}")
-    pk = SubProcessKiller()
+
     # 3.自动训练出图
     train_with_params(
         pretrained_model_name_or_path=sd_model_path,
@@ -1188,7 +1188,7 @@ def train_auto(
         num_repeats=[f"{1}"],
         batch_size=1,
         resolution=f"{width_train},{height_train}",
-        epoch=3000  // (len(os.listdir(train_dir))//2),  # 整数，随便填
+        epoch=3000 // (len(os.listdir(train_dir))//2),  # 整数，随便填
         network_module="networks.lora",
         network_train_unet_only=False,
         network_train_text_encoder_only=False,
@@ -1205,7 +1205,6 @@ def train_auto(
         lr_scheduler="cosine",
         auto_lr=True,
         auto_lr_param=6,
-
         cache_latents=True,
         # cache latents to main memory to reduce VRAM usage (augmentations must be disabled)
         cache_latents_to_disk=False,
@@ -1217,7 +1216,6 @@ def train_auto(
         bucket_no_upscale=True,  # 秋叶版没有这个,make bucket for each image without upscaling
         token_warmup_min=1,  # 秋叶版没有这个,start learning at N tags (token means comma separated strinfloatgs)
         token_warmup_step=0,  # 秋叶版没有这个,tag length reaches maximum on N steps (or N*max_train_steps if N<1)
-
         caption_extension=".txt",
         caption_dropout_rate=0.0,  # Rate out dropout caption(0.0~1.0)
         caption_dropout_every_n_epochs=0,  # Dropout all captions every N epochs
@@ -1232,7 +1230,6 @@ def train_auto(
         # 秋叶版没有这个,enable face-centered crop augmentation and its range (e.g. 2.0,4.0)
         random_crop=False,
         # 秋叶版没有这个,enable random crop (for style training in face-centered crop augmentation)
-
         lowram=False,
         # enable low RAM optimization. e.g. load models to VRAM instead of RAM (for machines which have bigger VRAM than RAM such as Colab and Kaggle)
         mem_eff_attn=False,  # use memory efficient attention for CrossAttention
@@ -1242,17 +1239,14 @@ def train_auto(
         # 秋叶版没有这个,max num workers for DataLoader (lower is less main RAM usage, faster epoch start and slower data loading)
         persistent_data_loader_workers=True,
         # persistent DataLoader workers (useful for reduce time gap between epoch, but may use more memory)
-
         max_train_steps=1600,  # 秋叶版没有这个,
         gradient_checkpointing=True,
         gradient_accumulation_steps=1,
         # 整数，随便填, Number of updates steps to accumulate before performing a backward/update pass
         mixed_precision="no",  # 是否使用混精度
         full_fp16=True,  # fp16 training including gradients
-
         # ["ddim","pndm","lms","euler","euler_a","heun","dpm_2","dpm_2_a","dpmsolver","dpmsolver++","dpmsingle","k_lms","k_euler","k_euler_a","k_dpm_2","k_dpm_2_a",]
         sample_every_n_epochs=None,  # 1,2,3,4,5.....
-
         # network额外参数
         conv_dim=None,  # 默认为None，可以填4的倍数，类似于network_dim,
         # lycoris才有，# 4的倍数, 适用于lora,dylora。如果是dylora,则"conv_dim must be same as network_dim",
@@ -1260,7 +1254,6 @@ def train_auto(
         unit=8,  # 秋叶版没有
         dropout=0,  # dropout 概率, 0 为不使用 dropout, 越大则 dropout 越多，推荐 0~0.5， LoHa/LoKr/(IA)^3暂时不支持
         algo='lora',  # 可选['lora','loha','lokr','ia3']
-
         enable_block_weights=False,  # 让下面几个参数有效
         block_dims=None,  # lora,  类似于network_dim,
         block_alphas=None,  # lora,默认为None，可以填比con_dim小的整数，类似于network_alpha
@@ -1270,18 +1263,14 @@ def train_auto(
         mid_lr_weight=None,  # lora, 1位float,例如 1.0；
         up_lr_weight=None,  # lora, 12位的float List，例如[1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0]
         block_lr_zero_threshold=0.0,  # float型，分层学习率置 0 阈值
-
         # AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, AdaFactor
         weight_decay=0.01,  # optimizer_args,优化器内部的参数，权重衰减系数，不建议随便改
         betas=0.9,  # optimizer_args,优化器内部的参数，不建议随便改
-
         max_grad_norm=1.0,  # Max gradient norm, 0 for no clipping
-
         # linear, cosine, cosine_with_restarts, polynomial, constant (default), constant_with_warmup, adafactor
         lr_scheduler_num_cycles=1,  # Number of restarts for cosine scheduler with restarts
         lr_warmup_steps=0,  # Number of steps for the warmup in the lr scheduler
         lr_scheduler_power=1,  # Polynomial power for polynomial scheduler
-
         seed=918699631,
         prior_loss_weight=1.0,  # loss weight for regularization images
         min_snr_gamma=None,  # float型，比如5.0，最小信噪比伽马值，如果启用推荐为 5
@@ -1290,7 +1279,6 @@ def train_auto(
         # 与noise_offset配套使用；add `latent mean absolute value * this value` to noise_offset (disabled if None, default)
         multires_noise_iterations=6,  # 整数，多分辨率（金字塔）噪声迭代次数 推荐 6-10。无法与 noise_offset 一同启用。
         multires_noise_discount=0.3,  # 多分辨率（金字塔）噪声衰减率 推荐 6-10。无法与 noise_offset 一同启用。
-
         config_file=None,  # "test_config.toml",  # using .toml instead of args to pass hyperparameter
         output_config=False,  # output command line args to given .toml file
         # accelerator=accelerator,
@@ -1298,7 +1286,6 @@ def train_auto(
         callback=train_callback,
     )
 
-    pk.kill_sub_process()
     try:
         shutil.rmtree(tmp_face_dir)
     except:
