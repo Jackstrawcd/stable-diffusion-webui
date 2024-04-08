@@ -704,6 +704,85 @@ def prepare_accelerator(logging_dir="./logs", log_prefix=None, gradient_accumula
     return accelerator, unwrap_model
 
 
+# def seg_face(input_path, output_path, model_path):
+#     # 加载人脸关键点检测器
+#     face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
+#     if not os.path.isfile(face_model):
+#         import requests
+#         print("download shape_predictor_68_face_landmarks.dat from xingzheassert.obs.cn-north-4.myhuaweicloud.com")
+#         resp = requests.get(
+#             'https://xingzheassert.obs.cn-north-4.myhuaweicloud.com/sd-web/resource/face/shape_predictor_68_face_landmarks.dat')
+#         if resp:
+#             dirname = os.path.dirname(face_model)
+#             os.makedirs(dirname, exist_ok=True)
+#             filepath = os.path.join("tmp", 'shape_predictor_68_face_landmarks.dat')
+#             os.makedirs('tmp', exist_ok=True)
+#             chunk_size = 1024
+#
+#             with open(filepath, 'wb') as f:
+#                 for chunk in resp.iter_content(chunk_size=chunk_size):
+#                     if chunk:
+#                         f.write(chunk)
+#
+#             if os.path.isfile(filepath):
+#                 shutil.move(filepath, face_model)
+#
+#     if not os.path.isfile(face_model):
+#         raise OSError(f'cannot found model:{face_model}')
+#     predictor = dlib.shape_predictor(face_model)
+#     os.makedirs(output_path, exist_ok=True)
+#
+#     face_files = []
+#     i = 0
+#     for f in os.listdir(input_path):
+#         fi = os.path.join(input_path, f)
+#         if not os.path.isfile(fi):
+#             continue
+#         i += 1
+#         # 加载图像
+#         image = cv2.imread(fi)
+#
+#         if not isinstance(image, (Image.Image, np.ndarray)): continue
+#
+#         # 将图像转换为灰度图
+#         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+#
+#         # 使用人脸检测器检测人脸
+#         detector = dlib.get_frontal_face_detector()
+#         faces = detector(gray)
+#
+#         # 创建一个与原始图像相同大小的掩膜
+#         mask = np.zeros_like(image)
+#
+#         # 遍历检测到的人脸
+#         # print(len(faces))
+#         if len(faces) != 1:
+#             print(f"cannot detect face:{f}, result:{len(faces)}")
+#             continue
+#         for face in faces:
+#             # 检测人脸关键点
+#             landmarks = predictor(gray, face)
+#
+#             # 提取人脸轮廓
+#             points = []
+#             for n in range(68):
+#                 x = landmarks.part(n).x
+#                 y = landmarks.part(n).y
+#                 points.append((x, y))
+#
+#             # 创建人脸蒙版
+#             hull = cv2.convexHull(np.array(points))
+#             cv2.fillConvexPoly(mask, hull, (255, 255, 255))
+#
+#         # 将蒙版应用到原始图像上
+#         result = cv2.bitwise_and(image, mask)
+#         full = os.path.join(output_path, f)
+#         cv2.imwrite(full, result)
+#         face_files.append(full)
+#         print(f"detect face {f}({i}) ==> ok")
+#     return face_files
+
+
 def seg_face(input_path, output_path, model_path):
     # 加载人脸关键点检测器
     face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
@@ -751,14 +830,14 @@ def seg_face(input_path, output_path, model_path):
         detector = dlib.get_frontal_face_detector()
         faces = detector(gray)
 
-        # 创建一个与原始图像相同大小的掩膜
-        mask = np.zeros_like(image)
-
         # 遍历检测到的人脸
         # print(len(faces))
         if len(faces) != 1:
             print(f"cannot detect face:{f}, result:{len(faces)}")
             continue
+
+        white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
+
         for face in faces:
             # 检测人脸关键点
             landmarks = predictor(gray, face)
@@ -772,16 +851,45 @@ def seg_face(input_path, output_path, model_path):
 
             # 创建人脸蒙版
             hull = cv2.convexHull(np.array(points))
-            cv2.fillConvexPoly(mask, hull, (255, 255, 255))
+            cv2.fillConvexPoly(white_background, hull, (0, 0, 0))
 
-        # 将蒙版应用到原始图像上
-        result = cv2.bitwise_and(image, mask)
+        # 将原图像与人脸蒙版相乘，得到抠出人脸后的图像
+        face_image = cv2.bitwise_or(image, white_background)
+
+        # 计算所有点的最小和最大坐标值
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        cropped_face = face_image[min_y:max_y, min_x:max_x]
+
+        cropped_face_pil = Image.fromarray(cropped_face)
+
+        blank_width = 512
+        blank_height = 512
+        # 创建一个空白图像
+        blank_image = Image.new('RGB', (blank_width, blank_height), color='white')
+
+        width = 300
+        height = 300
+        # 调整尺寸并填充空白
+        cropped_face_resized = ImageOps.pad(cropped_face_pil, (width, height), color='white')
+
+        # 计算将人脸图像放置在空白图像中心的位置
+        center_x = (blank_width - width) // 2
+        center_y = (blank_height - height) // 2
+
+        # 在空白图像上粘贴人脸图像
+        blank_image.paste(cropped_face_resized, (center_x, center_y))
+        blank_image_cv = np.array(blank_image)
+
         full = os.path.join(output_path, f)
-        cv2.imwrite(full, result)
+
+        cv2.imwrite(full, blank_image_cv)
+
         face_files.append(full)
         print(f"detect face {f}({i}) ==> ok")
     return face_files
-
 
 def train_callback(percentage):
     print(percentage)
@@ -864,9 +972,9 @@ def train_auto(
 ):
     # 预设参数
     width_train = 512
-    height_train = 768
+    height_train = 512
     width = 512
-    height = 768
+    height = 512
     # options = ["抠出头部", "磨皮"]  # 数据预处理方法 "抠出全身","抠出头部", "放大", "镜像", "旋转", "改变尺寸","磨皮"
     head_width = 512
     head_height = 512
@@ -908,8 +1016,9 @@ def train_auto(
     if gender == 2:
         options.append("去除背景")
 
-    if len(images) < 15:
-        options.append("镜像")
+    # 不需要镜像
+    # if len(images) < 15:
+    #     options.append("镜像")
 
     args = parse_args()
     if "去除背景" in options:
@@ -978,18 +1087,18 @@ def train_auto(
     # print("1111:::", image_list, head_list)
 
     if gender == 2:
-        # 1.图片预处理
-        train_preprocess(process_src=new_body_list, process_dst=train_dir, process_width=width, process_height=height,
-                         preprocess_txt_action='ignore', process_keep_original_size=False,
-                         process_split=False, process_flip=False, process_caption=True,
-                         process_caption_deepbooru=not use_wd, split_threshold=0.5,
-                         overlap_ratio=0.2, process_focal_crop=True, process_focal_crop_face_weight=0.9,
-                         process_focal_crop_entropy_weight=0.3, process_focal_crop_edges_weight=0.5,
-                         process_focal_crop_debug=False, process_multicrop=None, process_multicrop_mindim=None,
-                         process_multicrop_maxdim=None, process_multicrop_minarea=None, process_multicrop_maxarea=None,
-                         process_multicrop_objective=None, process_multicrop_threshold=None, progress_cb=None,
-                         model_path=general_model_path,
-                         filter_tags=undesired_tags, additional_tags=trigger_word)
+        # # 1.图片预处理
+        # train_preprocess(process_src=new_body_list, process_dst=train_dir, process_width=width, process_height=height,
+        #                  preprocess_txt_action='ignore', process_keep_original_size=False,
+        #                  process_split=False, process_flip=False, process_caption=True,
+        #                  process_caption_deepbooru=not use_wd, split_threshold=0.5,
+        #                  overlap_ratio=0.2, process_focal_crop=True, process_focal_crop_face_weight=0.9,
+        #                  process_focal_crop_entropy_weight=0.3, process_focal_crop_edges_weight=0.5,
+        #                  process_focal_crop_debug=False, process_multicrop=None, process_multicrop_mindim=None,
+        #                  process_multicrop_maxdim=None, process_multicrop_minarea=None, process_multicrop_maxarea=None,
+        #                  process_multicrop_objective=None, process_multicrop_threshold=None, progress_cb=None,
+        #                  model_path=general_model_path,
+        #                  filter_tags=undesired_tags, additional_tags=trigger_word)
 
         train_preprocess(process_src=new_head_list, process_dst=train_dir, process_width=head_width,
                          process_height=head_height,
@@ -1009,7 +1118,7 @@ def train_auto(
                      preprocess_txt_action='ignore', process_keep_original_size=False,
                      process_split=False, process_flip=False, process_caption=True,
                      process_caption_deepbooru=not use_wd, split_threshold=0.5,
-                     overlap_ratio=0.2, process_focal_crop=True, process_focal_crop_face_weight=0.9,
+                     overlap_ratio=0.2, process_focal_crop=False, process_focal_crop_face_weight=0.9,
                      process_focal_crop_entropy_weight=0.3, process_focal_crop_edges_weight=0.5,
                      process_focal_crop_debug=False, process_multicrop=None, process_multicrop_mindim=None,
                      process_multicrop_maxdim=None, process_multicrop_minarea=None, process_multicrop_maxarea=None,
@@ -1076,10 +1185,10 @@ def train_auto(
         trigger_words=[""],  # [f"{task_id}",f"{task_id}"],
         list_train_data_dir=[process_dir],
         save_model_as="safetensors",
-        num_repeats=[f"{repeats_n}"],
-        batch_size=8,
+        num_repeats=[f"{1}"],
+        batch_size=1,
         resolution=f"{width_train},{height_train}",
-        epoch=10,  # 整数，随便填
+        epoch=3000  // (len(os.listdir(train_dir))//2),  # 整数，随便填
         network_module="networks.lora",
         network_train_unet_only=False,
         network_train_text_encoder_only=False,
@@ -1093,7 +1202,7 @@ def train_auto(
         learning_rate=0.0001,
         unet_lr=0.0001,
         text_encoder_lr=0.00001,
-        lr_scheduler="constant",
+        lr_scheduler="cosine",
         auto_lr=True,
         auto_lr_param=6,
 
