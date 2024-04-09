@@ -26,7 +26,7 @@ from handlers.utils import init_script_args, get_selectable_script, init_default
     load_sd_model_weights, save_processed_images, ADetailer, mk_tmp_dir
 from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
 from loguru import logger
-
+from tools.wrapper import FuncExecTimeWrapper
 
 class DigitalTaskType(IntEnum):
     Img2Img = 2  # 原本是1
@@ -254,6 +254,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         return result
 
+    @FuncExecTimeWrapper()
     def _get_image_masks(self, init_images: typing.Sequence[str]):
 
         def gen_image_mask(init_image: str):
@@ -272,6 +273,8 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             mask = r.get(image)
             if not mask:
                 r[image] = gen_image_mask(image)
+            else:
+                print(f"image mask cached:{image}")
 
         return r
 
@@ -351,29 +354,29 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "threshold_b": 64,
                             "weight": 0.35
                         },
-                        {
-                            "control_mode": "ControlNet is more important",
-                            "enabled": True,
-                            "guess_mode": False,
-                            "guidance_end": 1,
-                            "guidance_start": 0,
-                            "image": {
-                                "image": init_img,
-                                "mask": ""
-                            },
-                            "invert_image": False,
-                            "isShowModel": True,
-                            "low_vram": False,
-                            "model": "control_v11p_sd15_openpose",
-                            "module": "openpose_faceonly",
-                            "pixel_perfect": True,
-                            "processor_res": 512,
-                            "resize_mode": "Crop and Resize",
-                            "tempMask": "",
-                            "threshold_a": 64,
-                            "threshold_b": 64,
-                            "weight": 0.35
-                        },
+                        # {
+                        #     "control_mode": "ControlNet is more important",
+                        #     "enabled": True,
+                        #     "guess_mode": False,
+                        #     "guidance_end": 1,
+                        #     "guidance_start": 0,
+                        #     "image": {
+                        #         "image": init_img,
+                        #         "mask": ""
+                        #     },
+                        #     "invert_image": False,
+                        #     "isShowModel": True,
+                        #     "low_vram": False,
+                        #     "model": "control_v11p_sd15_openpose",
+                        #     "module": "openpose_faceonly",
+                        #     "pixel_perfect": True,
+                        #     "processor_res": 512,
+                        #     "resize_mode": "Crop and Resize",
+                        #     "tempMask": "",
+                        #     "threshold_a": 64,
+                        #     "threshold_b": 64,
+                        #     "weight": 0.35
+                        # },
                         {
                             "control_mode": "Balanced",
                             "enabled": True,
