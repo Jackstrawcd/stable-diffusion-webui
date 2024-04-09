@@ -20,12 +20,22 @@ from modules.processing import StableDiffusionProcessingImg2Img, process_images,
 from handlers.utils import init_script_args, get_selectable_script, init_default_script_args, \
     load_sd_model_weights, save_processed_images, ADetailer
 
+import os
+import shutil
+import dlib
+import cv2
+from PIL import Image
+import numpy as np
+
+from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
+
 
 class DigitalTaskType(IntEnum):
-    Img2Img = 1
-    Txt2Img = 2
+    Img2Img = 2  # 原本是1
+    Txt2Img = 1  # 原本是2
 
 
+# class DigitalTaskHandler(Txt2ImgTaskHandler):
 class DigitalTaskHandler(Img2ImgTaskHandler):
 
     def __init__(self):
@@ -66,6 +76,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             except:
                 pass
             return False
+
         if is_like_me():
             return [0.5, 0.5, 0.5, 0.5]
         return [0.5, 0.5, 0.5, 0.5]
@@ -74,16 +85,18 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         images = (t.get('init_img') or "").split(',')
         n_iter = t.get('n_iter') or 1
         batch_size = t.get('batch_size') or 1
-        if len(images) < batch_size*n_iter:
-            images += [images[0]]*(batch_size*n_iter-len(images))
+        if len(images) < batch_size * n_iter:
+            images += [images[0]] * (batch_size * n_iter - len(images))
         else:
-            images = random.sample(images, batch_size*n_iter)
+            images = random.sample(images, batch_size * n_iter)
         return images
 
     def _build_i2i_tasks(self, t: Task):
         tasks = []
         t['prompt'] = "(((best quality))),(((ultra detailed))), " + t['prompt']
-        t['negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), nude, (badhandv4:1.2), (easynegative), verybadimagenegative_v1.3, deformation, blurry, " + t['negative_prompt']
+        t[
+            'negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), nude, (badhandv4:1.2), (easynegative), verybadimagenegative_v1.3, deformation, blurry, " + \
+                                 t['negative_prompt']
 
         denoising_strengths = self._denoising_strengths(t)
         init_images = self._get_init_images(t)
@@ -107,10 +120,151 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         return tasks
 
+    # def _build_t2i_tasks(self, t: Task):
+    #     tasks = []
+    #     t['prompt'] = "(((best quality))),(((ultra detailed))), " + t['prompt']
+    #     t['negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), " + t['negative_prompt']
+
+    #     denoising_strengths = self._denoising_strengths(t)
+    #     init_images = self._get_init_images(t)
+    #     for i, denoising_strength in enumerate(denoising_strengths):
+    #         t['denoising_strength'] = 0.1
+    #         t['n_iter'] = 1
+    #         t['batch_size'] = 1
+    #         init_img = init_images[i] if len(init_images) > i else init_images[0]
+    #         t['alwayson_scripts'] = {
+    #             ADetailer: {
+    #                 'args': [{
+    #                     'ad_model': 'face_yolov8n_v2.pt',
+    #                     'ad_mask_blur': 4,
+    #                     'ad_denoising_strength': denoising_strength,
+    #                     'ad_inpaint_only_masked': True,
+    #                     'ad_inpaint_only_masked_padding': 64
+    #                 }]
+    #             },
+    #             "ControlNet": {
+    #                 "args": [
+    #                     {
+    #                         "control_mode": "Balanced",
+    #                         "enabled": True,
+    #                         "guess_mode": False,
+    #                         "guidance_end": 1,
+    #                         "guidance_start": 0,
+    #                         "image": {
+    #                             "image": init_img,
+    #                             "mask": ""
+    #                         },
+    #                         "invert_image": False,
+    #                         "isShowModel": True,
+    #                         "low_vram": False,
+    #                         "model": "control_v11p_sd15_inpaint [ebff9138]",
+    #                         "module": "inpaint_only",
+    #                         "pixel_perfect": False,
+    #                         "processor_res": 512,
+    #                         "resize_mode": "Scale to Fit (Inner Fit)",
+    #                         "tempImg": None,
+    #                         "tempMask": None,
+    #                         "threshold_a": 64,
+    #                         "threshold_b": 64,
+    #                         "weight": 1
+    #                     }
+    #                 ]
+    #             }
+    #         }
+    #         tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
+
+    #     return tasks
+
+    # 白色背景
+    def _get_face_mask(self, image, model_path):
+
+        # 加载人脸关键点检测器
+        face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
+        if not os.path.isfile(face_model):
+            import requests
+            print("download shape_predictor_68_face_landmarks.dat from xingzheassert.obs.cn-north-4.myhuaweicloud.com")
+            resp = requests.get(
+                'https://xingzheassert.obs.cn-north-4.myhuaweicloud.com/sd-web/resource/face/shape_predictor_68_face_landmarks.dat')
+            if resp:
+                dirname = os.path.dirname(face_model)
+                os.makedirs(dirname, exist_ok=True)
+                filepath = os.path.join("tmp", 'shape_predictor_68_face_landmarks.dat')
+                os.makedirs('tmp', exist_ok=True)
+                chunk_size = 1024
+
+                with open(filepath, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+
+                if os.path.isfile(filepath):
+                    shutil.move(filepath, face_model)
+
+        if not os.path.isfile(face_model):
+            raise OSError(f'cannot found model:{face_model}')
+        predictor = dlib.shape_predictor(face_model)
+
+        image_tmp_local_path = get_tmp_local_path(image)
+        image = Image.open(image_tmp_local_path)
+        image = np.array(image)
+
+        if not isinstance(image, (Image.Image, np.ndarray)):
+            print("底图有错误")
+            return None
+
+        # 将图像转换为灰度图
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # 使用人脸检测器检测人脸
+        detector = dlib.get_frontal_face_detector()
+        faces = detector(gray)
+
+        # 创建一个与原始图像相同大小的掩膜
+        mask = np.zeros_like(image)
+
+        # 遍历检测到的人脸
+        # print(len(faces))
+        if len(faces) != 1:
+            print(f"cannot detect face:{f}, result:{len(faces)}")
+            return None
+
+        white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
+
+        for face in faces:
+            # 检测人脸关键点
+            landmarks = predictor(gray, face)
+
+            # 提取人脸轮廓
+            points = []
+            for n in range(68):
+                x = landmarks.part(n).x
+                y = landmarks.part(n).y
+                points.append((x, y))
+
+        # 计算所有点的最小和最大坐标值
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        # 将矩形区域设置为黑色
+
+        cv2.rectangle(mask, (min_x, min_y), (max_x, max_y), (255, 255, 255), -1)
+
+        # 将蒙版应用到原始图像上
+        # 将mask应用于原始图像
+        result = cv2.bitwise_and(white_background, mask)
+
+        return result
+
     def _build_t2i_tasks(self, t: Task):
         tasks = []
-        t['prompt'] = "(((best quality))),(((ultra detailed))), " + t['prompt']
-        t['negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), " + t['negative_prompt']
+        t[
+            'prompt'] = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition,Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable,HDR,16K,details,The most authentic,Glossy solid color," + \
+                        t['prompt']
+        t[
+            'negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers, normal quality, ((monochrome)), ((grayscale)), logo, word, character, " + \
+                                 t['negative_prompt']
+        face_model_path = os.path.join(os.getcwd(), "models")
 
         denoising_strengths = self._denoising_strengths(t)
         init_images = self._get_init_images(t)
@@ -118,21 +272,48 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             t['denoising_strength'] = 0.1
             t['n_iter'] = 1
             t['batch_size'] = 1
+            t.get("cfg_scale", 5)
+
             init_img = init_images[i] if len(init_images) > i else init_images[0]
+            print("init_img, face_model_path:", init_img, face_model_path)
+            init_img_mask = self._get_face_mask(init_img, face_model_path)
+            init_img_mask = Image.fromarray(init_img_mask)
+
+            init_img_mask = upload_pil_image(is_tmp=True, image=init_img_mask, quality=100)
+
             t['alwayson_scripts'] = {
                 ADetailer: {
                     'args': [{
-                        'ad_model': 'face_yolov8n_v2.pt',
-                        'ad_mask_blur': 4,
-                        'ad_denoising_strength': denoising_strength,
-                        'ad_inpaint_only_masked': True,
-                        'ad_inpaint_only_masked_padding': 64
-                    }]
+                        "enabled": True,
+                        "ad_model": "face_yolov8n_v2.pt",
+                        "ad_prompt": "",
+                        "ad_negative_prompt": "",
+                        "ad_confidence": 0.3,
+                        "ad_dilate_erode": 4,
+                        "ad_mask_merge_invert": "None",
+                        "ad_mask_blur": 4,
+                        "ad_denoising_strength": denoising_strength,
+                        "ad_inpaint_only_masked": True,
+                        "ad_inpaint_only_masked_padding": 64
+                    },
+                        {
+                            "enabled": True,
+                            "ad_model": "face_yolov8n_v2.pt",
+                            "ad_prompt": "",
+                            "ad_negative_prompt": "",
+                            "ad_confidence": 0.3,
+                            "ad_dilate_erode": 4,
+                            "ad_mask_merge_invert": "None",
+                            "ad_mask_blur": 4,
+                            "ad_denoising_strength": denoising_strength - 0.1,
+                            "ad_inpaint_only_masked": True,
+                            "ad_inpaint_only_masked_padding": 64
+                        }, ]
                 },
                 "ControlNet": {
                     "args": [
                         {
-                            "control_mode": "Balanced",
+                            "control_mode": "ControlNet is more important",
                             "enabled": True,
                             "guess_mode": False,
                             "guidance_end": 1,
@@ -144,17 +325,62 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "invert_image": False,
                             "isShowModel": True,
                             "low_vram": False,
-                            "model": "control_v11p_sd15_inpaint [ebff9138]",
-                            "module": "inpaint_only",
-                            "pixel_perfect": False,
+                            "model": "control_v11p_sd15_canny",
+                            "module": "canny",
+                            "pixel_perfect": True,
                             "processor_res": 512,
-                            "resize_mode": "Scale to Fit (Inner Fit)",
-                            "tempImg": None,
-                            "tempMask": None,
+                            "resize_mode": "Crop and Resize",
+                            "tempMask": "",
+                            "threshold_a": 64,
+                            "threshold_b": 64,
+                            "weight": 0.35
+                        },
+                        {
+                            "control_mode": "ControlNet is more important",
+                            "enabled": True,
+                            "guess_mode": False,
+                            "guidance_end": 1,
+                            "guidance_start": 0,
+                            "image": {
+                                "image": init_img,
+                                "mask": ""
+                            },
+                            "invert_image": False,
+                            "isShowModel": True,
+                            "low_vram": False,
+                            "model": "control_v11p_sd15_openpose",
+                            "module": "openpose_faceonly",
+                            "pixel_perfect": True,
+                            "processor_res": 512,
+                            "resize_mode": "Crop and Resize",
+                            "tempMask": "",
+                            "threshold_a": 64,
+                            "threshold_b": 64,
+                            "weight": 0.35
+                        },
+                        {
+                            "control_mode": "Balanced",
+                            "enabled": True,
+                            "guess_mode": False,
+                            "guidance_end": 1,
+                            "guidance_start": 0,
+                            "image": {
+                                "image": init_img,
+                                "mask": init_img_mask
+                            },
+                            "invert_image": False,
+                            "isShowModel": True,
+                            "low_vram": False,
+                            "model": "control_v11p_sd15_inpaint",
+                            "module": "inpaint_only",
+                            "pixel_perfect": True,
+                            "processor_res": 512,
+                            "resize_mode": "Crop and Resize",
+                            "tempMask": "",
                             "threshold_a": 64,
                             "threshold_b": 64,
                             "weight": 1
-                        }
+                        },
                     ]
                 }
             }
