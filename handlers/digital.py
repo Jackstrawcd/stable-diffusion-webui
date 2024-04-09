@@ -80,8 +80,8 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             return False
 
         if is_like_me():
-            return [0.5, 0.5, 0.5, 0.5]
-        return [0.5, 0.5, 0.5, 0.5]
+            return [0.45, 0.45, 0.5, 0.5]
+        return [0.45, 0.5, 0.5, 0.55]
 
     def _get_init_images(self, t: Task):
         images = (t.get('init_img') or "").split(',')
