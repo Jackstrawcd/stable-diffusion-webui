@@ -9,6 +9,8 @@ import random
 import re
 import time
 import typing
+import uuid
+
 import modules
 from modules import shared
 from enum import IntEnum
@@ -18,7 +20,7 @@ from handlers.img2img import Img2ImgTask, Img2ImgTaskHandler
 from worker.task import TaskType, TaskProgress, Task, TaskStatus
 from modules.processing import StableDiffusionProcessingImg2Img, process_images, Processed, fix_seed
 from handlers.utils import init_script_args, get_selectable_script, init_default_script_args, \
-    load_sd_model_weights, save_processed_images, ADetailer
+    load_sd_model_weights, save_processed_images, ADetailer, mk_tmp_dir
 
 import os
 import shutil
@@ -277,9 +279,11 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             init_img = init_images[i] if len(init_images) > i else init_images[0]
             print("init_img, face_model_path:", init_img, face_model_path)
             init_img_mask = self._get_face_mask(init_img, face_model_path)
-            init_img_mask = Image.fromarray(init_img_mask)
-
-            init_img_mask = upload_pil_image(is_tmp=True, image=init_img_mask, quality=100)
+            init_img_mask_image = Image.fromarray(init_img_mask)
+            dirname = mk_tmp_dir("digital_mask")
+            init_img_mask_path = os.path.join(dirname, uuid.uuid4().hex + ".png")
+            init_img_mask_image.save(init_img_mask_path)
+            # init_img_mask = upload_pil_image(is_tmp=True, image=init_img_mask, quality=100)
 
             t['alwayson_scripts'] = {
                 ADetailer: {
@@ -366,7 +370,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "guidance_start": 0,
                             "image": {
                                 "image": init_img,
-                                "mask": init_img_mask
+                                "mask": init_img_mask_path
                             },
                             "invert_image": False,
                             "isShowModel": True,
