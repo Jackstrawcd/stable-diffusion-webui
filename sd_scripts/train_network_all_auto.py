@@ -981,7 +981,7 @@ class NetworkTrainer:
             # self.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer,text_encoder, unet)
             if is_main_process:
                 if callable(train_epoch_callback) and not args.auto_lr:
-                    print("callback start")
+                    print(f"callback start, epoch:{epoch}, num_train_epochs:{num_train_epochs}")
                     # train_epoch_callback(epoch + 1, loss_total / len(loss_list), num_train_epochs)
                     train_epoch_callback(
                         epoch + 1, loss_total / len(loss_list), num_train_epochs,
