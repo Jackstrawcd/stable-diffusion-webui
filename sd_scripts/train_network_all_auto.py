@@ -983,9 +983,10 @@ class NetworkTrainer:
                 if callable(train_epoch_callback) and not args.auto_lr:
                     print(f"callback start, epoch:{epoch}, num_train_epochs:{num_train_epochs}")
                     # train_epoch_callback(epoch + 1, loss_total / len(loss_list), num_train_epochs)
-                    train_epoch_callback(
-                        epoch + 1, loss_total / len(loss_list), num_train_epochs,
-                        (epoch * 1.0 + 1.0) * 100.0 / num_train_epochs)
+                    p = int((epoch * 1.0 + 1.0) * 100.0 / num_train_epochs)
+                    if p > 1:
+                        train_epoch_callback(
+                            epoch + 1, loss_total / len(loss_list), num_train_epochs, p)
                     print("callback end")
                 # end of epoch
                 if math.isnan(loss_total / len(loss_list)):
