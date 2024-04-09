@@ -204,7 +204,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         image_tmp_local_path = get_tmp_local_path(image)
         image = Image.open(image_tmp_local_path)
-        image = np.array(image)
+        image = np.array(image.convert("RGB"))
 
         if not isinstance(image, (Image.Image, np.ndarray)):
             print("底图有错误")
@@ -486,6 +486,8 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         upload_files_eta_secs = 5
 
         start_time = time.time()
+        logger.info(f"preprocess digtal t2i cost:{time.time() - time_start}s")
+
         for i, p in enumerate(tasks):
             if i == 0:
                 self._set_little_models(p)
