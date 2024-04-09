@@ -28,7 +28,7 @@ def digital_doppelganger(job: Task, dump_func: typing.Callable = None):
     yield p
 
     task = DigitalDoppelgangerTask(job)
-    eta = int(len(task.image_keys) * 0.89 + 1416)
+    eta = int(len(task.image_keys) * 8.9 + 1416)
     p = TaskProgress.new_ready(job, 'ready preprocess', 0)
     p.eta_relative = eta
     yield p
