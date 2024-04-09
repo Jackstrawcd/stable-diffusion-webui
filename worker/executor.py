@@ -25,6 +25,7 @@ from tools.environment import Env_DontCleanModels,get_pod_status_env
 from worker.k8s_health import write_healthy, system_exit, process_health
 from worker import graceful_exit
 
+
 class TaskExecutor(Thread):
 
     def __init__(self, ckpt_recorder: CkptLoadRecorder, timeout=0, group=None, target=None, name=None,
@@ -88,7 +89,6 @@ class TaskExecutor(Thread):
         else:
             if p.pre_task_completed():
                 self.nofity()
-        
 
     def exec_task(self):
         write_healthy(True)

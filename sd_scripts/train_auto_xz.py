@@ -116,8 +116,8 @@ def face_detect(image_list):
             angle = (90 - angle) / 90
 
             # face size judge
-            face_width = (retinaface_box[2] - retinaface_box[0]) / (3 - 1)
-            face_height = (retinaface_box[3] - retinaface_box[1]) / (3 - 1)
+            face_width = (retinaface_box[2] - retinaface_box[0])
+            face_height = (retinaface_box[3] - retinaface_box[1])
             if min(face_width, face_height) < 128:
                 print("Face size in {} is small than 128. Ignore it.".format(image))
                 continue
