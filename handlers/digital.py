@@ -10,26 +10,22 @@ import re
 import time
 import typing
 import uuid
-
+import os
+import shutil
+import dlib
+import cv2
 import modules
-from modules import shared
+import numpy as np
 from enum import IntEnum
-from PIL import ImageOps
+from PIL import ImageOps, Image
 from handlers.txt2img import Txt2ImgTask
 from handlers.img2img import Img2ImgTask, Img2ImgTaskHandler
 from worker.task import TaskType, TaskProgress, Task, TaskStatus
 from modules.processing import StableDiffusionProcessingImg2Img, process_images, Processed, fix_seed
 from handlers.utils import init_script_args, get_selectable_script, init_default_script_args, \
     load_sd_model_weights, save_processed_images, ADetailer, mk_tmp_dir
-
-import os
-import shutil
-import dlib
-import cv2
-from PIL import Image
-import numpy as np
-
 from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
+from loguru import logger
 
 
 class DigitalTaskType(IntEnum):
@@ -258,6 +254,27 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         return result
 
+    def _get_image_masks(self, init_images: typing.Sequence[str]):
+
+        def gen_image_mask(init_image: str):
+            face_model_path = os.path.join(os.getcwd(), "models")
+
+            init_img_mask = self._get_face_mask(init_image, face_model_path)
+            init_img_mask_image = Image.fromarray(init_img_mask)
+            dirname = mk_tmp_dir("digital_mask")
+            init_img_mask_path = os.path.join(dirname, uuid.uuid4().hex + ".png")
+            init_img_mask_image.save(init_img_mask_path)
+
+            return init_img_mask_path
+
+        r = {}
+        for image in init_images:
+            mask = r.get(image)
+            if not mask:
+                r[image] = gen_image_mask(image)
+
+        return r
+
     def _build_t2i_tasks(self, t: Task):
         tasks = []
         t[
@@ -266,10 +283,11 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         t[
             'negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers, normal quality, ((monochrome)), ((grayscale)), logo, word, character, " + \
                                  t['negative_prompt']
-        face_model_path = os.path.join(os.getcwd(), "models")
 
         denoising_strengths = self._denoising_strengths(t)
         init_images = self._get_init_images(t)
+        init_image_masks = self._get_image_masks(init_images)
+
         for i, denoising_strength in enumerate(denoising_strengths):
             t['denoising_strength'] = 0.1
             t['n_iter'] = 1
@@ -277,13 +295,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             t.get("cfg_scale", 5)
 
             init_img = init_images[i] if len(init_images) > i else init_images[0]
-            print("init_img, face_model_path:", init_img, face_model_path)
-            init_img_mask = self._get_face_mask(init_img, face_model_path)
-            init_img_mask_image = Image.fromarray(init_img_mask)
-            dirname = mk_tmp_dir("digital_mask")
-            init_img_mask_path = os.path.join(dirname, uuid.uuid4().hex + ".png")
-            init_img_mask_image.save(init_img_mask_path)
-            # init_img_mask = upload_pil_image(is_tmp=True, image=init_img_mask, quality=100)
+            init_img_mask_path = init_image_masks[init_img]
 
             t['alwayson_scripts'] = {
                 ADetailer: {
@@ -473,9 +485,11 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         processed = None
         upload_files_eta_secs = 5
 
+        start_time = time.time()
         for i, p in enumerate(tasks):
             if i == 0:
                 self._set_little_models(p)
+
             processed = process_images(p)
             all_seeds.extend(processed.all_seeds)
             all_subseeds.extend(processed.all_subseeds)
@@ -490,7 +504,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 progress.calc_eta_relative(upload_files_eta_secs)
             yield progress
             p.close()
-
+        logger.info(f"inference digtal t2i cost:{time.time()-start_time}s")
         # 开启宫格图
         if task.get('grid_enable', False):
             grid = modules.images.image_grid(images, len(images))
