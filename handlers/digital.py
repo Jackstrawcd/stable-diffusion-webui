@@ -27,6 +27,7 @@ from handlers.utils import init_script_args, get_selectable_script, init_default
 from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
 from loguru import logger
 from tools.wrapper import FuncExecTimeWrapper
+from collections import defaultdict
 
 
 class DigitalTaskType(IntEnum):
@@ -104,9 +105,10 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         basename = os.path.basename(local)
         dirname = os.path.dirname(local)
         resize_path = os.path.join(dirname, "resize-" + basename)
-        w = 512
-        h = 768 if img.height % 768 == 0 else 512  # 仅支持512和768两个分辨率
-        img.resize((w, h)).save(resize_path)
+        # w = 512
+        # h = 768 if img.height % 768 == 0 else 512  # 仅支持512和768两个分辨率
+        # img.resize((w, h)).save(resize_path)
+        img.save(resize_path)
 
         return resize_path
 
@@ -311,31 +313,26 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         denoising_strengths = self._denoising_strengths(t)
         init_images = self._get_init_images(t)
         init_image_masks = self._get_image_masks(init_images)
+        init_image_count = defaultdict(int)
+        for image_path in init_images:
+            init_image_count[image_path] += 1
 
-        for i, denoising_strength in enumerate(denoising_strengths):
+        for init_img, count in init_image_count.items():
+            idx = init_images.index(init_img)
+            denoising_strength = denoising_strengths[idx]
+            t['n_iter'] = count
+        # for i, denoising_strength in enumerate(denoising_strengths):
             t['denoising_strength'] = 0.1
-            t['n_iter'] = 1
+            # t['n_iter'] = 1
             t['batch_size'] = 1
             t.get("cfg_scale", 5)
 
-            init_img = init_images[i] if len(init_images) > i else init_images[0]
+            # init_img = init_images[i] if len(init_images) > i else init_images[0]
             init_img_mask_path = init_image_masks[init_img]
 
             t['alwayson_scripts'] = {
                 ADetailer: {
-                    'args': [{
-                        "enabled": True,
-                        "ad_model": "face_yolov8n_v2.pt",
-                        "ad_prompt": "",
-                        "ad_negative_prompt": "",
-                        "ad_confidence": 0.3,
-                        "ad_dilate_erode": 4,
-                        "ad_mask_merge_invert": "None",
-                        "ad_mask_blur": 4,
-                        "ad_denoising_strength": denoising_strength,
-                        "ad_inpaint_only_masked": True,
-                        "ad_inpaint_only_masked_padding": 64
-                    },
+                    'args': [
                         {
                             "enabled": True,
                             "ad_model": "face_yolov8n_v2.pt",
@@ -345,10 +342,24 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "ad_dilate_erode": 4,
                             "ad_mask_merge_invert": "None",
                             "ad_mask_blur": 4,
-                            "ad_denoising_strength": denoising_strength - 0.1,
+                            "ad_denoising_strength": denoising_strength,
                             "ad_inpaint_only_masked": True,
                             "ad_inpaint_only_masked_padding": 64
-                        }, ]
+                        },
+                        # {
+                        #     "enabled": True,
+                        #     "ad_model": "face_yolov8n_v2.pt",
+                        #     "ad_prompt": "",
+                        #     "ad_negative_prompt": "",
+                        #     "ad_confidence": 0.3,
+                        #     "ad_dilate_erode": 4,
+                        #     "ad_mask_merge_invert": "None",
+                        #     "ad_mask_blur": 4,
+                        #     "ad_denoising_strength": denoising_strength - 0.1,
+                        #     "ad_inpaint_only_masked": True,
+                        #     "ad_inpaint_only_masked_padding": 64
+                        # },
+                    ]
                 },
                 "ControlNet": {
                     "args": [
@@ -367,7 +378,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "low_vram": False,
                             "model": "control_v11p_sd15_canny",
                             "module": "canny",
-                            "pixel_perfect": False,
+                            "pixel_perfect": True,
                             "processor_res": 512,
                             "resize_mode": "Crop and Resize",
                             "tempMask": "",
@@ -390,7 +401,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "low_vram": False,
                             "model": "control_v11p_sd15_openpose",
                             "module": "openpose_faceonly",
-                            "pixel_perfect": False,
+                            "pixel_perfect": True,
                             "processor_res": 512,
                             "resize_mode": "Crop and Resize",
                             "tempMask": "",
@@ -413,7 +424,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "low_vram": False,
                             "model": "control_v11p_sd15_inpaint",
                             "module": "inpaint_only",
-                            "pixel_perfect": False,
+                            "pixel_perfect": True,
                             "processor_res": 512,
                             "resize_mode": "Crop and Resize",
                             "tempMask": "",
