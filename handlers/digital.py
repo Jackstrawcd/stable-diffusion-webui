@@ -315,7 +315,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         for i, denoising_strength in enumerate(denoising_strengths):
             t['denoising_strength'] = 0.1
-            # t['n_iter'] = 1
+            t['n_iter'] = 1
             t['batch_size'] = 1
             t.get("cfg_scale", 5)
 
