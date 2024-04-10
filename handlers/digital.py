@@ -334,19 +334,19 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "ad_inpaint_only_masked": True,
                             "ad_inpaint_only_masked_padding": 64
                         },
-                        # {
-                        #     "enabled": True,
-                        #     "ad_model": "face_yolov8n_v2.pt",
-                        #     "ad_prompt": "",
-                        #     "ad_negative_prompt": "",
-                        #     "ad_confidence": 0.3,
-                        #     "ad_dilate_erode": 4,
-                        #     "ad_mask_merge_invert": "None",
-                        #     "ad_mask_blur": 4,
-                        #     "ad_denoising_strength": denoising_strength - 0.1,
-                        #     "ad_inpaint_only_masked": True,
-                        #     "ad_inpaint_only_masked_padding": 64
-                        # },
+                        {
+                            "enabled": True,
+                            "ad_model": "face_yolov8n_v2.pt",
+                            "ad_prompt": "",
+                            "ad_negative_prompt": "",
+                            "ad_confidence": 0.3,
+                            "ad_dilate_erode": 4,
+                            "ad_mask_merge_invert": "None",
+                            "ad_mask_blur": 4,
+                            "ad_denoising_strength": denoising_strength - 0.1,
+                            "ad_inpaint_only_masked": True,
+                            "ad_inpaint_only_masked_padding": 64
+                        },
                     ]
                 },
                 "ControlNet": {
