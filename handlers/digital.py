@@ -28,6 +28,7 @@ from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
 from loguru import logger
 from tools.wrapper import FuncExecTimeWrapper
 
+
 class DigitalTaskType(IntEnum):
     Img2Img = 2  # 原本是1
     Txt2Img = 1  # 原本是2
@@ -87,7 +88,27 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             images += [images[0]] * (batch_size * n_iter - len(images))
         else:
             images = random.sample(images, batch_size * n_iter)
-        return images
+
+        local_images = []
+        map = {}
+        for key in images:
+            if key not in map:
+                map[key] = self._download_and_resize_img(key)
+            local_images.append(map[key])
+
+        return local_images
+
+    def _download_and_resize_img(self, key: str) -> str:
+        local = get_tmp_local_path(key)
+        img = Image.open(local).convert("RGB")
+        basename = os.path.basename(local)
+        dirname = os.path.dirname(local)
+        resize_path = os.path.join(dirname, "resize-" + basename)
+        w = 512
+        h = 768 if img.height % 768 == 0 else 512  # 仅支持512和768两个分辨率
+        img.resize((w, h)).save(resize_path)
+
+        return resize_path
 
     def _build_i2i_tasks(self, t: Task):
         tasks = []
@@ -346,7 +367,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "low_vram": False,
                             "model": "control_v11p_sd15_canny",
                             "module": "canny",
-                            "pixel_perfect": True,
+                            "pixel_perfect": False,
                             "processor_res": 512,
                             "resize_mode": "Crop and Resize",
                             "tempMask": "",
@@ -354,29 +375,29 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "threshold_b": 64,
                             "weight": 0.35
                         },
-                        # {
-                        #     "control_mode": "ControlNet is more important",
-                        #     "enabled": True,
-                        #     "guess_mode": False,
-                        #     "guidance_end": 1,
-                        #     "guidance_start": 0,
-                        #     "image": {
-                        #         "image": init_img,
-                        #         "mask": ""
-                        #     },
-                        #     "invert_image": False,
-                        #     "isShowModel": True,
-                        #     "low_vram": False,
-                        #     "model": "control_v11p_sd15_openpose",
-                        #     "module": "openpose_faceonly",
-                        #     "pixel_perfect": True,
-                        #     "processor_res": 512,
-                        #     "resize_mode": "Crop and Resize",
-                        #     "tempMask": "",
-                        #     "threshold_a": 64,
-                        #     "threshold_b": 64,
-                        #     "weight": 0.35
-                        # },
+                        {
+                            "control_mode": "ControlNet is more important",
+                            "enabled": True,
+                            "guess_mode": False,
+                            "guidance_end": 1,
+                            "guidance_start": 0,
+                            "image": {
+                                "image": init_img,
+                                "mask": ""
+                            },
+                            "invert_image": False,
+                            "isShowModel": True,
+                            "low_vram": False,
+                            "model": "control_v11p_sd15_openpose",
+                            "module": "openpose_faceonly",
+                            "pixel_perfect": False,
+                            "processor_res": 512,
+                            "resize_mode": "Crop and Resize",
+                            "tempMask": "",
+                            "threshold_a": 64,
+                            "threshold_b": 64,
+                            "weight": 0.35
+                        },
                         {
                             "control_mode": "Balanced",
                             "enabled": True,
@@ -392,7 +413,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "low_vram": False,
                             "model": "control_v11p_sd15_inpaint",
                             "module": "inpaint_only",
-                            "pixel_perfect": True,
+                            "pixel_perfect": False,
                             "processor_res": 512,
                             "resize_mode": "Crop and Resize",
                             "tempMask": "",
@@ -509,7 +530,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 progress.calc_eta_relative(upload_files_eta_secs)
             yield progress
             p.close()
-        logger.info(f"inference digtal t2i cost:{time.time()-start_time}s")
+        logger.info(f"inference digtal t2i cost:{time.time() - start_time}s")
         # 开启宫格图
         if task.get('grid_enable', False):
             grid = modules.images.image_grid(images, len(images))
