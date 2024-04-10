@@ -386,29 +386,29 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                             "threshold_b": 64,
                             "weight": 0.35
                         },
-                        {
-                            "control_mode": "ControlNet is more important",
-                            "enabled": True,
-                            "guess_mode": False,
-                            "guidance_end": 1,
-                            "guidance_start": 0,
-                            "image": {
-                                "image": init_img,
-                                "mask": ""
-                            },
-                            "invert_image": False,
-                            "isShowModel": True,
-                            "low_vram": False,
-                            "model": "control_v11p_sd15_openpose",
-                            "module": "openpose_faceonly",
-                            "pixel_perfect": True,
-                            "processor_res": 512,
-                            "resize_mode": "Crop and Resize",
-                            "tempMask": "",
-                            "threshold_a": 64,
-                            "threshold_b": 64,
-                            "weight": 0.35
-                        },
+                        # {
+                        #     "control_mode": "ControlNet is more important",
+                        #     "enabled": True,
+                        #     "guess_mode": False,
+                        #     "guidance_end": 1,
+                        #     "guidance_start": 0,
+                        #     "image": {
+                        #         "image": init_img,
+                        #         "mask": ""
+                        #     },
+                        #     "invert_image": False,
+                        #     "isShowModel": True,
+                        #     "low_vram": False,
+                        #     "model": "control_v11p_sd15_openpose",
+                        #     "module": "openpose_faceonly",
+                        #     "pixel_perfect": True,
+                        #     "processor_res": 512,
+                        #     "resize_mode": "Crop and Resize",
+                        #     "tempMask": "",
+                        #     "threshold_a": 64,
+                        #     "threshold_b": 64,
+                        #     "weight": 0.35
+                        # },
                         {
                             "control_mode": "Balanced",
                             "enabled": True,
@@ -526,11 +526,11 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         for i, p in enumerate(tasks):
             if i == 0:
                 self._set_little_models(p)
-
+            p.do_not_save_grid = True
             processed = process_images(p)
             all_seeds.extend(processed.all_seeds)
             all_subseeds.extend(processed.all_subseeds)
-            images.append(processed.images[0])
+            images.extend(processed.images)
             progress.task_progress = min((i + 1) * 100 / len(tasks), 98)
             # time_since_start = time.time() - time_start
             # eta = (time_since_start / p)
