@@ -27,6 +27,7 @@ from handlers.utils import init_script_args, get_selectable_script, init_default
 from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
 from loguru import logger
 from tools.wrapper import FuncExecTimeWrapper
+from collections import defaultdict
 
 
 class DigitalTaskType(IntEnum):
@@ -300,7 +301,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         return r
 
-    def _build_t2i_tasks(self, t: Task):
+    def _build_t2i_tasks(self, t: Task, merge_task: bool = False):
         tasks = []
         t[
             'prompt'] = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition,Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable,HDR,16K,details,The most authentic,Glossy solid color," + \
@@ -313,16 +314,8 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         init_images = self._get_init_images(t)
         init_image_masks = self._get_image_masks(init_images)
 
-        for i, denoising_strength in enumerate(denoising_strengths):
-            t['denoising_strength'] = 0.1
-            t['n_iter'] = 1
-            t['batch_size'] = 1
-            t.get("cfg_scale", 5)
-
-            init_img = init_images[i] if len(init_images) > i else init_images[0]
-            init_img_mask_path = init_image_masks[init_img]
-
-            t['alwayson_scripts'] = {
+        def get_alwayson_scripts(init_img: str, init_img_mask_path: str, denoising_strength: float):
+            return {
                 ADetailer: {
                     'args': [
                         {
@@ -427,7 +420,34 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                     ]
                 }
             }
-            tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
+
+        if not merge_task:
+            for i, denoising_strength in enumerate(denoising_strengths):
+                t['denoising_strength'] = 0.1
+                t['n_iter'] = 1
+                t['batch_size'] = 1
+
+                init_img = init_images[i] if len(init_images) > i else init_images[0]
+                init_img_mask_path = init_image_masks[init_img]
+
+                t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
+                tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
+        else:
+            init_image_count = defaultdict(int)
+            for image_path in init_images:
+                init_image_count[image_path] += 1
+            for init_img, count in init_image_count.items():
+                i = init_images.index(init_img)
+                denoising_strength = denoising_strengths[i]
+                t['denoising_strength'] = denoising_strength
+                t['n_iter'] = count
+                t['batch_size'] = 1
+
+                init_img = init_images[i] if len(init_images) > i else init_images[0]
+                init_img_mask_path = init_image_masks[init_img]
+
+                t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
+                tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
 
         return tasks
 
@@ -501,10 +521,12 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         time_start = time.time()
         base_model_path = self._get_local_checkpoint(task)
         load_sd_model_weights(base_model_path, task.model_hash)
-        progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 50)
+        progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 150)
         self._refresh_default_script_args()
         yield progress
-        tasks = self._build_t2i_tasks(task)
+
+        merge_task = True
+        tasks = self._build_t2i_tasks(task, merge_task)
         # i2i
         images = []
         all_seeds = []
@@ -518,17 +540,21 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         for i, p in enumerate(tasks):
             if i == 0:
                 self._set_little_models(p)
+            print(f"> process task n_iter:{p.n_iter}")
             p.do_not_save_grid = True
             processed = process_images(p)
             all_seeds.extend(processed.all_seeds)
             all_subseeds.extend(processed.all_subseeds)
-            images.append(processed.images[0])
+            if not merge_task:
+                images.append(processed.images[0])
+            else:
+                images.extend(processed.images)
             progress.task_progress = min((i + 1) * 100 / len(tasks), 98)
             # time_since_start = time.time() - time_start
             # eta = (time_since_start / p)
             # progress.eta_relative = int(eta - time_since_start) + upload_files_eta_secs
             if i == 0:
-                progress.eta_relative = 60
+                progress.eta_relative = 120
             else:
                 progress.calc_eta_relative(upload_files_eta_secs)
             yield progress
