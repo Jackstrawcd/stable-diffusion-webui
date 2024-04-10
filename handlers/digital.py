@@ -306,7 +306,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         base_prompt = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition," \
                       "Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable," \
                       "HDR,16K,details,The most authentic,Glossy solid color,"
-        t['prompt'] = base_prompt + ""
+        t['prompt'] = base_prompt + t['prompt']
         t['negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers," \
                                " normal quality, ((monochrome)), ((grayscale)), logo, word, character, " + \
                                t['negative_prompt']
