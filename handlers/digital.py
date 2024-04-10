@@ -303,12 +303,13 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
     def _build_t2i_tasks(self, t: Task, merge_task: bool = False):
         tasks = []
-        t[
-            'prompt'] = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition,Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable,HDR,16K,details,The most authentic,Glossy solid color," + \
-                        t['prompt']
-        t[
-            'negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers, normal quality, ((monochrome)), ((grayscale)), logo, word, character, " + \
-                                 t['negative_prompt']
+        base_prompt = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition," \
+                      "Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable," \
+                      "HDR,16K,details,The most authentic,Glossy solid color,"
+        t['prompt'] = base_prompt + ""
+        t['negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers," \
+                               " normal quality, ((monochrome)), ((grayscale)), logo, word, character, " + \
+                               t['negative_prompt']
 
         denoising_strengths = self._denoising_strengths(t)
         init_images = self._get_init_images(t)
@@ -521,7 +522,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         time_start = time.time()
         base_model_path = self._get_local_checkpoint(task)
         load_sd_model_weights(base_model_path, task.model_hash)
-        progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 150)
+        progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 130)
         self._refresh_default_script_args()
         yield progress
 
@@ -548,7 +549,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             if not merge_task:
                 images.append(processed.images[0])
             else:
-                images.extend(processed.images)
+                images.extend(processed.images[:processed.index_of_end_image+1])
             progress.task_progress = min((i + 1) * 100 / len(tasks), 98)
             # time_since_start = time.time() - time_start
             # eta = (time_since_start / p)
