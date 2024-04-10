@@ -107,6 +107,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         resize_path = os.path.join(dirname, "resize-" + basename)
         # img.resize((w, h)).save(resize_path)
         img.save(resize_path)
+        img.close()
 
         return resize_path
 
