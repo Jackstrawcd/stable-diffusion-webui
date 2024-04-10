@@ -449,10 +449,10 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 init_img = init_images[i] if len(init_images) > i else init_images[0]
                 init_img_mask_path = init_image_masks[init_img]
 
-                img = Image.open(init_img)
-                t['width'] = 512
-                t['height'] = 768 if img.height % 768 == 0 else 512  # 仅支持512和768两个分辨率
-                img.close()
+                # img = Image.open(init_img)
+                # t['width'] = 512
+                # t['height'] = 768 if img.height % 768 == 0 else 512  # 仅支持512和768两个分辨率
+                # img.close()
 
                 t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
                 tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
