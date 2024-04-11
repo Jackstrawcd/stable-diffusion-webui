@@ -78,8 +78,8 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             return False
 
         if is_like_me():
-            return [0.45, 0.45, 0.5, 0.5]
-        return [0.45, 0.5, 0.5, 0.55]
+            return [0.45, 0.5, 0.5, 0.55]
+        return [0.5, 0.5, 0.55, 0.55]
 
     def _get_init_images(self, t: Task):
         images = (t.get('init_img') or "").split(',')
@@ -114,8 +114,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
     def _build_i2i_tasks(self, t: Task):
         tasks = []
         t['prompt'] = "(((best quality))),(((ultra detailed))), " + t['prompt']
-        t[
-            'negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), nude, (badhandv4:1.2), (easynegative), verybadimagenegative_v1.3, deformation, blurry, " + \
+        t['negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), nude, (badhandv4:1.2), (easynegative), verybadimagenegative_v1.3, deformation, blurry, " + \
                                  t['negative_prompt']
 
         denoising_strengths = self._denoising_strengths(t)
@@ -287,6 +286,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             init_img_mask_image = Image.fromarray(init_img_mask)
             dirname = mk_tmp_dir("digital_mask")
             init_img_mask_path = os.path.join(dirname, uuid.uuid4().hex + ".png")
+
             init_img_mask_image.save(init_img_mask_path)
 
             return init_img_mask_path
@@ -440,7 +440,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             for image_path in init_images:
                 init_image_count[image_path] += 1
             for init_img, count in init_image_count.items():
-                i = init_images.index(init_img)
+                i = init_images.index(init_img) + count
                 denoising_strength = denoising_strengths[i]
                 t['denoising_strength'] = denoising_strength
                 t['n_iter'] = count
@@ -529,7 +529,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         time_start = time.time()
         base_model_path = self._get_local_checkpoint(task)
         load_sd_model_weights(base_model_path, task.model_hash)
-        progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 130)
+        progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 120)
         self._refresh_default_script_args()
         yield progress
 
@@ -562,7 +562,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             # eta = (time_since_start / p)
             # progress.eta_relative = int(eta - time_since_start) + upload_files_eta_secs
             if i == 0:
-                progress.eta_relative = 120
+                progress.eta_relative = 90
             else:
                 progress.calc_eta_relative(upload_files_eta_secs)
             yield progress
