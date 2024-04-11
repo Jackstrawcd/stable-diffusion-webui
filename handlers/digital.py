@@ -309,9 +309,14 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         terms = (x.strip() for x in str(t['prompt']).split(','))
         lora_prompt = [x for x in terms if x.startswith('<lora:')]
         t['prompt'] = base_prompt + ','.join(lora_prompt)
-        t['negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers," \
-                               " normal quality, ((monochrome)), ((grayscale)), logo, word, character, " + \
-                               t['negative_prompt']
+        t['negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers, " \
+                               "normal quality, ((monochrome)), ((grayscale)), logo, word, character, lowres," \
+                               "bad anatomy, bad hands, text,error, missing fngers,extra digt ,fewer digits,cropped," \
+                               "wort quality ,low quality,normal quality, jpeg artifacts,signature,watermark, " \
+                               "username, blurry, bad feet, lowres, bad anatomy, bad hands, text,error, " \
+                               "missing fngers,extra digt ,fewer digits,cropped, wort quality ,low quality," \
+                               "normal quality, jpeg artifacts,signature,watermark, username, blurry, " \
+                               "bad feet,hand" + t['negative_prompt']
 
         denoising_strengths = self._denoising_strengths(t)
         init_images = self._get_init_images(t)
