@@ -445,7 +445,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             for image_path in init_images:
                 init_image_count[image_path] += 1
             for init_img, count in init_image_count.items():
-                i = init_images.index(init_img) + count
+                i = init_images.index(init_img) + count - 1
                 denoising_strength = denoising_strengths[i]
                 t['denoising_strength'] = denoising_strength
                 t['n_iter'] = count
