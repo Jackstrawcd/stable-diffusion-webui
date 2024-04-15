@@ -21,7 +21,7 @@ from sd_scripts.library import train_util
 import uuid
 import argparse
 import sys
-
+from sd_scripts.GPEN.face_enhancement import FaceEnhancement
 import sd_scripts.library.config_util as config_util
 import sd_scripts.library.custom_train_functions as custom_train_functions
 from sd_scripts.library.fix_photo import mopi
@@ -958,6 +958,30 @@ def parse_args():
     return parser.parse_args([])
 
 
+def FaceEnhancement_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, default='GPEN-BFR-512', help='GPEN model')
+    parser.add_argument('--task', type=str, default='FaceEnhancement', help='task of GPEN model')
+    parser.add_argument('--key', type=str, default=None, help='key of GPEN model')
+    parser.add_argument('--in_size', type=int, default=512, help='in resolution of GPEN')
+    parser.add_argument('--out_size', type=int, default=None, help='out resolution of GPEN')
+    parser.add_argument('--channel_multiplier', type=int, default=2, help='channel multiplier of GPEN')
+    parser.add_argument('--narrow', type=float, default=1, help='channel narrow scale')
+    parser.add_argument('--alpha', type=float, default=1, help='blending the results')
+    parser.add_argument('--use_sr', action='store_true', help='use sr or not')
+    parser.add_argument('--use_cuda', action='store_true', help='use cuda or not')
+    parser.add_argument('--save_face', action='store_true', help='save face or not')
+    parser.add_argument('--aligned', action='store_true', help='input are aligned faces or not')
+    parser.add_argument('--sr_model', type=str, default='realesrnet', help='SR model')
+    parser.add_argument('--sr_scale', type=int, default=2, help='SR scale')
+    parser.add_argument('--tile_size', type=int, default=0, help='tile size for SR to avoid OOM')
+    parser.add_argument('--indir', type=str, default='examples/imgs', help='input folder')
+    parser.add_argument('--outdir', type=str, default='results/outs-BFR', help='output folder')
+    parser.add_argument('--ext', type=str, default='.jpg', help='extension of output')
+    args = parser.parse_args([])
+    return args
+
+
 
 # 一键训练入口函数
 def train_auto(
@@ -1039,8 +1063,13 @@ def train_auto(
     body_list, head_list = custom_configurable_image_processing(
         train_data_dir, options, head_width, head_height, if_res_oribody=True, model_p=general_model_path)
     skin_retouching = pipeline(Tasks.skin_retouching, model="damo/cv_unet_skin-retouching")
-    portrait_enhancement = pipeline(Tasks.image_portrait_enhancement, model="damo/cv_gpen_image-portrait-enhancement",
-                                    model_revision="v1.0.0", device="cpu")
+
+    # portrait_enhancement = pipeline(Tasks.image_portrait_enhancement, model="damo/cv_gpen_image-portrait-enhancement",
+    #                                 model_revision="v1.0.0")
+    faceEnhancement_args = FaceEnhancement_args()
+    portrait_enhancement = FaceEnhancement(faceEnhancement_args, in_size=faceEnhancement_args.in_size,
+                                           model=faceEnhancement_args.model, use_sr=faceEnhancement_args.use_sr,
+                                           device='cuda' if faceEnhancement_args.use_cuda else 'cpu')
 
     new_body_list = []
     new_head_list = []
@@ -1048,12 +1077,13 @@ def train_auto(
 
     if gender == 2:
         for body_img in body_list:
-            body_img = Image.fromarray(
-                cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+            # body_img = Image.fromarray(cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+            body_img = cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
             new_body_list.append(body_img)
 
     for head_img in head_list:
-        head_img = Image.fromarray(cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+        # head_img = Image.fromarray(cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+        head_img = cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
         new_head_list.append(head_img)
 
     del skin_retouching
@@ -1062,16 +1092,34 @@ def train_auto(
     enh_head_list = []
     if gender == 2:
         for body_img in new_body_list:
-            body_img = Image.fromarray(
-                cv2.cvtColor(portrait_enhancement(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+            img_out, orig_faces, enhanced_faces = portrait_enhancement.process(body_img,
+                                                                               aligned=faceEnhancement_args.aligned)
+
+            for m, (ef, of) in enumerate(zip(enhanced_faces, orig_faces)):
+                of = cv2.resize(of, ef.shape[:2])
+                ef = cv2.cvtColor(ef, cv2.COLOR_BGR2RGB)
+            # body_img = Image.fromarray(
+            #     cv2.cvtColor(enhanced_faces, cv2.COLOR_BGR2RGB))
+            body_img = Image.fromarray(body_img)
             enh_body_list.append(body_img)
 
     for head_img in new_head_list:
-        head_img = Image.fromarray(
-            cv2.cvtColor(portrait_enhancement(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+        img_out, orig_faces, enhanced_faces = portrait_enhancement.process(head_img,
+                                                                           aligned=faceEnhancement_args.aligned)
+
+        for m, (ef, of) in enumerate(zip(enhanced_faces, orig_faces)):
+            of = cv2.resize(of, ef.shape[:2])
+            ef = cv2.cvtColor(ef, cv2.COLOR_BGR2RGB)
+
+        # head_img = Image.fromarray(
+        #     cv2.cvtColor(enhanced_faces, cv2.COLOR_BGR2RGB))
+        head_img = Image.fromarray(head_img)
         enh_head_list.append(head_img)
 
     del portrait_enhancement
+
+    import torch
+    torch.set_grad_enabled(True)
 
     # # 抠出脸部
     # if only_face:

@@ -8,14 +8,14 @@ import numpy as np
 # import __init_paths
 from .face_detect.retinaface_detection import RetinaFaceDetection
 from .face_parse.face_parsing import FaceParse
-from .face_model.face_gan import FaceGAN
+# from .face_model.face_gan import FaceGAN
 from .sr_model.real_esrnet import RealESRNet
 from .align_faces import warp_and_crop_face, get_reference_facial_points
 
 class FaceEnhancement(object):
     def __init__(self, args, base_dir='./', in_size=512, out_size=None, model=None, use_sr=True, device='cuda'):
         self.facedetector = RetinaFaceDetection(base_dir, device)
-        self.facegan = FaceGAN(base_dir, in_size, out_size, model, args.channel_multiplier, args.narrow, args.key, device=device)
+        # self.facegan = FaceGAN(base_dir, in_size, out_size, model, args.channel_multiplier, args.narrow, args.key, device=device)
         self.srmodel =  RealESRNet(base_dir, args.sr_model, args.sr_scale, args.tile_size, device=device)
         self.faceparser = FaceParse(base_dir, device=device)
         self.use_sr = use_sr
@@ -52,7 +52,8 @@ class FaceEnhancement(object):
     def process(self, img, aligned=False):
         orig_faces, enhanced_faces = [], []
         if aligned:
-            ef = self.facegan.process(img)
+            # ef = self.facegan.process(img)
+            ef = img
             orig_faces.append(img)
             enhanced_faces.append(ef)
 
@@ -81,8 +82,8 @@ class FaceEnhancement(object):
             of, tfm_inv = warp_and_crop_face(img, facial5points, reference_pts=self.reference_5pts, crop_size=(self.in_size, self.in_size))
             
             # enhance the face
-            ef = self.facegan.process(of)
-            
+            # ef = self.facegan.process(of)
+            ef = of
             orig_faces.append(of)
             enhanced_faces.append(ef)
             
