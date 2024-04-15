@@ -16,6 +16,7 @@ import dlib
 import cv2
 import modules
 import numpy as np
+import modules.shared as shared
 from enum import IntEnum
 from PIL import ImageOps, Image
 from handlers.txt2img import Txt2ImgTask
@@ -554,6 +555,28 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             if i == 0:
                 self._set_little_models(p)
             print(f"> process task n_iter:{p.n_iter}")
+
+            def update_progress():
+                image_numbers = p.n_iter * p.batch_size
+                if image_numbers <= 0:
+                    image_numbers = 1
+                task_p = 0
+                if shared.state.job_count > 0:
+                    job_no = shared.state.job_no - 1 if shared.state.job_no > 0 else 0
+                    task_p += job_no / (image_numbers)
+                    # p += (shared.state.job_no) / shared.state.job_count
+                if shared.state.sampling_steps > 0:
+                    task_p += 1 / (image_numbers) * shared.state.sampling_step / shared.state.sampling_steps
+                cp = min((i + 1) * 100 * task_p / len(tasks), 98)
+                if cp - progress.task_progress > 2:
+                    progress.task_progress = cp
+                    if i == 0:
+                        progress.eta_relative = 90
+                    else:
+                        progress.calc_eta_relative(upload_files_eta_secs)
+                    self._set_task_status(progress)
+
+            shared.state.current_latent_changed_callback = update_progress
             p.do_not_save_grid = True
             processed = process_images(p)
             all_seeds.extend(processed.all_seeds)
@@ -562,15 +585,15 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 images.append(processed.images[0])
             else:
                 images.extend(processed.images[:processed.index_of_end_image+1])
-            progress.task_progress = min((i + 1) * 100 / len(tasks), 98)
+
             # time_since_start = time.time() - time_start
             # eta = (time_since_start / p)
             # progress.eta_relative = int(eta - time_since_start) + upload_files_eta_secs
-            if i == 0:
-                progress.eta_relative = 90
-            else:
-                progress.calc_eta_relative(upload_files_eta_secs)
-            yield progress
+            # if i == 0:
+            #     progress.eta_relative = 90
+            # else:
+            #     progress.calc_eta_relative(upload_files_eta_secs)
+            # yield progress
             p.close()
         logger.info(f"inference digtal t2i cost:{time.time() - start_time}s")
         # 开启宫格图
