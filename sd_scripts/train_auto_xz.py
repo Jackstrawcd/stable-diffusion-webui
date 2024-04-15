@@ -1038,9 +1038,9 @@ def train_auto(
 
     body_list, head_list = custom_configurable_image_processing(
         train_data_dir, options, head_width, head_height, if_res_oribody=True, model_p=general_model_path)
-    skin_retouching = pipeline(Tasks.skin_retouching, model="damo/cv_unet_skin-retouching", device="cuda:0")
+    skin_retouching = pipeline(Tasks.skin_retouching, model="damo/cv_unet_skin-retouching")
     portrait_enhancement = pipeline(Tasks.image_portrait_enhancement, model="damo/cv_gpen_image-portrait-enhancement",
-                                    model_revision="v1.0.0", device="cuda:0")
+                                    model_revision="v1.0.0", device="cpu")
 
     new_body_list = []
     new_head_list = []
