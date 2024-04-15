@@ -1189,7 +1189,7 @@ def train_auto(
         num_repeats=[f"{1}"],
         batch_size=1,
         resolution=f"{width_train},{height_train}",
-        epoch=4000 // (len(os.listdir(train_dir))//2),  # 整数，随便填
+        epoch=3000 // (len(os.listdir(train_dir))//2),  # 整数，随便填
         network_module="networks.lora",
         network_train_unet_only=False,
         network_train_text_encoder_only=False,
