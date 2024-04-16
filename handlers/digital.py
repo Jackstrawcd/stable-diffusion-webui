@@ -568,9 +568,9 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 if shared.state.sampling_steps > 0:
                     task_p += 1 / (image_numbers) * shared.state.sampling_step / shared.state.sampling_steps
                 cp = min((i + 1) * 100 * task_p / len(tasks), 98)
-                if cp - progress.task_progress > 2:
-                    progress.task_progress = cp
-                    if i == 0:
+                if cp - progress.task_progress > 8:
+                    progress.task_progress = int(cp)
+                    if i == 0 and len(tasks) > 1:
                         progress.eta_relative = 90
                     else:
                         progress.calc_eta_relative(upload_files_eta_secs)
