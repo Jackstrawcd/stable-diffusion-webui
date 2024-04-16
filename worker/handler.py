@@ -105,10 +105,9 @@ class TaskHandler:
                     if progress.task_progress < old_task_progress:
                         progress.task_progress = old_task_progress
 
-
                     self._set_task_status(progress)
                     if callable(progress_callback):
-                        progress_callback(progress)
+                        progress_callback(progress, False)
 
             except torch.cuda.OutOfMemoryError:
                 ok = torch_gc()
@@ -122,7 +121,7 @@ class TaskHandler:
                     f'CUDA out of memory and release, free: {free / 2 ** 30:.3f} GB, total: {total / 2 ** 30:.3f} GB')
 
                 self._set_task_status(p)
-                progress_callback(p)
+                progress_callback(p, True)
                 system_exit(free, total, coercive=not ok)
             except (RuntimeError, torch.cuda.CudaError) as runtimeErr:
                 trace = traceback.format_exc()
@@ -130,7 +129,7 @@ class TaskHandler:
                 logger.exception('unhandle runtime err')
                 p = TaskProgress.new_failed(task, msg, trace)
                 self._set_task_status(p)
-                progress_callback(p)
+                progress_callback(p, True)
                 free, total = vram_mon.cuda_mem_get_info()
                 time.sleep(15)
                 system_exit(free, total, coercive=True)
@@ -141,7 +140,7 @@ class TaskHandler:
                 p = TaskProgress.new_failed(task, msg, trace)
 
                 self._set_task_status(p)
-                progress_callback(p)
+                progress_callback(p, True)
                 if not torch_gc():
                     free, total = vram_mon.cuda_mem_get_info()
                     system_exit(free, total, coercive=True)
