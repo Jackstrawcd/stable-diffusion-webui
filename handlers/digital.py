@@ -546,7 +546,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         all_seeds = []
         all_subseeds = []
         processed = None
-        upload_files_eta_secs = 5
+        upload_files_eta_secs = 20
 
         start_time = time.time()
         logger.info(f"preprocess digtal t2i cost:{time.time() - time_start}s")
@@ -567,7 +567,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                     # p += (shared.state.job_no) / shared.state.job_count
                 elif shared.state.sampling_steps > 0:
                     task_p += 1 / (image_numbers) * shared.state.sampling_step / shared.state.sampling_steps
-                cp = min((i + 1) * 100 * task_p / len(tasks), 98)
+                cp = min((i + 1) * 100 * task_p / len(tasks) * 0.65, 98)
                 if cp - progress.task_progress > 8:
                     progress.task_progress = int(cp)
                     if i == 0 and len(tasks) > 1:
