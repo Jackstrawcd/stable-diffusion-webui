@@ -565,7 +565,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                     job_no = shared.state.job_no - 1 if shared.state.job_no > 0 else 0
                     task_p += job_no / (image_numbers)
                     # p += (shared.state.job_no) / shared.state.job_count
-                if shared.state.sampling_steps > 0:
+                elif shared.state.sampling_steps > 0:
                     task_p += 1 / (image_numbers) * shared.state.sampling_step / shared.state.sampling_steps
                 cp = min((i + 1) * 100 * task_p / len(tasks), 98)
                 if cp - progress.task_progress > 8:
