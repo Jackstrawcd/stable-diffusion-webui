@@ -239,7 +239,10 @@ class TaskProgress(SerializationObj):
         if self.task_progress > 0:
             time_since_start = time.time() - self.start_time
             eta = (time_since_start / self.task_progress) * 100
-            self.eta_relative = int(eta - time_since_start) + offset
+            eta_relative = int(eta - time_since_start) + offset
+            if self.eta_relative > 0 and eta_relative < self.eta_relative:
+                self.eta_relative = eta_relative
+
         else:
             self.eta_relative = default
         return self.eta_relative
