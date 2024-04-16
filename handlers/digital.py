@@ -550,7 +550,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         start_time = time.time()
         logger.info(f"preprocess digtal t2i cost:{time.time() - time_start}s")
-
+        shared.state.begin()
         for i, p in enumerate(tasks):
             if i == 0:
                 self._set_little_models(p)
@@ -595,6 +595,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             #     progress.calc_eta_relative(upload_files_eta_secs)
             # yield progress
             p.close()
+        shared.state.end()
         logger.info(f"inference digtal t2i cost:{time.time() - start_time}s")
         # 开启宫格图
         if task.get('grid_enable', False):
