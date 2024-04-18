@@ -122,6 +122,7 @@ class TaskExecutor(Thread):
             except queue.Empty:
                 if random.randint(1, 10) < 3:
                     logger.info('task queue is empty...')
+                    torch_gc()
                 if not self.is_alive():
                     logger.info('task receiver dead')
                     free, total = vram_mon.cuda_mem_get_info()
