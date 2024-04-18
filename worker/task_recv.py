@@ -340,6 +340,7 @@ class TaskReceiver:
         # redis > 6.2.0
         # meta = rds.getdel(task_id)
         if self.task_score_limit > 0:
+            task_id = task_id.decode('utf8') if isinstance(task_id, bytes) else task_id
             arr = task_id.split('_')
             if len(arr) == 2:
                 try:
