@@ -137,7 +137,7 @@ class TaskReceiver:
         self.recorder = TaskReceiverRecorder()
         self.group_id = get_worker_group()
         # self.task_score_limit = 5 if cmd_opts.lowvram else (10 if cmd_opts.medvram else -1)
-        self.task_score_limit = -1 
+        self.task_score_limit = -1
         self.task_received_callback = task_received_callback
         self.before_pop_task = before_pop_task
 

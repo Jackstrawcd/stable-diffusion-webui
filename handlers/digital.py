@@ -20,6 +20,7 @@ import modules.shared as shared
 from enum import IntEnum
 from PIL import ImageOps, Image
 from handlers.txt2img import Txt2ImgTask
+from handlers.multi_digital import MultiGenDigitalPhotoTask
 from handlers.img2img import Img2ImgTask, Img2ImgTaskHandler
 from worker.task import TaskType, TaskProgress, Task, TaskStatus
 from modules.processing import StableDiffusionProcessingImg2Img, process_images, Processed, fix_seed
@@ -34,6 +35,7 @@ from collections import defaultdict
 class DigitalTaskType(IntEnum):
     Img2Img = 2  # 原本是1
     Txt2Img = 1  # 原本是2
+    Multi = 3  # 多人
 
 
 # class DigitalTaskHandler(Txt2ImgTaskHandler):
@@ -44,7 +46,8 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         self.task_type = TaskType.Digital
         self.register(
             (DigitalTaskType.Img2Img, self._exec_img2img),
-            (DigitalTaskType.Txt2Img, self._exec_txt2img)
+            (DigitalTaskType.Txt2Img, self._exec_txt2img),
+            (DigitalTaskType.Multi, self._exec_multi_portrait),
         )
 
     def _denoising_strengths(self, t: Task):
@@ -115,7 +118,8 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
     def _build_i2i_tasks(self, t: Task):
         tasks = []
         t['prompt'] = "(((best quality))),(((ultra detailed))), " + t['prompt']
-        t['negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), nude, (badhandv4:1.2), (easynegative), verybadimagenegative_v1.3, deformation, blurry, " + \
+        t[
+            'negative_prompt'] = "(worst quality:2), (low quality:2), (normal quality:2), nude, (badhandv4:1.2), (easynegative), verybadimagenegative_v1.3, deformation, blurry, " + \
                                  t['negative_prompt']
 
         denoising_strengths = self._denoising_strengths(t)
@@ -584,7 +588,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             if not merge_task:
                 images.append(processed.images[0])
             else:
-                images.extend(processed.images[:processed.index_of_end_image+1])
+                images.extend(processed.images[:processed.index_of_end_image + 1])
 
             # time_since_start = time.time() - time_start
             # eta = (time_since_start / p)
@@ -621,5 +625,33 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         progress = TaskProgress.new_finish(task, images)
         progress.update_seed(all_seeds, all_subseeds)
+
+        yield progress
+
+    def _exec_multi_portrait(self, task: Task):
+        self._refresh_default_script_args()
+        multi_process_task = MultiGenDigitalPhotoTask.from_task(task, self.default_script_args)
+        # 加载底模
+        base_model_path = self._get_local_checkpoint(task)
+        load_sd_model_weights(base_model_path, task.model_hash)
+        # 下载LORA
+        progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 120)
+        self._set_little_models(multi_process_task)
+        yield progress
+        # 获取LORA训练图片
+        train_image_dirs = multi_process_task.get_train_image_local_dir()
+        # 第1个LORA图片所在目录
+        first_lora_train_dataset = train_image_dirs[0]
+        # 第2个LORA图片所在目录
+        second_lora_train_dataset = train_image_dirs[1]
+
+        # todo: 生图逻辑
+
+        images = {
+            'samples': {
+                'high': []  # 原图KEY
+            }
+        }
+        progress = TaskProgress.new_finish(task, images)
 
         yield progress
