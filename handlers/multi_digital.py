@@ -564,7 +564,10 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         map = {}
         for key in images:
             if key not in map:
-                map[key] = self._download_and_resize_img(key)
+                local = get_tmp_local_path(key)
+                if local:
+                    map[key] = local
+
             local_images.append(map[key])
 
         return local_images
