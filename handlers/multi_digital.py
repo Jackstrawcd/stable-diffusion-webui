@@ -195,14 +195,16 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
             prompt = prompt.lower().replace('nsfw', '')
         kwargs['refiner_checkpoint'] = refiner_checkpoint
 
+        print("lora_meta_array:", lora_meta_array)
         return cls(base_model_path,
                    user_id,
+                   lora_meta_array,
                    default_script_args,
                    prompt=prompt,
                    negative_prompt=negative_prompt,
                    alwayson_scripts=alwayson_scripts,
                    select_script_name=select_script_name,
                    select_script_args=select_script_args,
-                   lora_meta_array=lora_meta_array,
+                    # default_script_arg_txt2img = default_script_args,
                    **kwargs)
 

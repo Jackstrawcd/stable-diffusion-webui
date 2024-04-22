@@ -31,6 +31,123 @@ from loguru import logger
 from tools.wrapper import FuncExecTimeWrapper
 from collections import defaultdict
 
+from modelscope.outputs import OutputKeys
+from modelscope.pipelines import pipeline
+from modelscope.utils.constant import Tasks
+
+
+def segment(segmentation_pipeline, img, ksize=0, eyeh=0, ksize1=0, include_neck=False, warp_mask=None,
+            return_human=False):
+    if True:
+        result = segmentation_pipeline(img)
+        masks = result['masks']
+        scores = result['scores']
+        labels = result['labels']
+        if len(masks) == 0:
+            return
+        h, w = masks[0].shape
+        mask_face = np.zeros((h, w))
+        mask_hair = np.zeros((h, w))
+        mask_neck = np.zeros((h, w))
+        mask_cloth = np.zeros((h, w))
+        mask_human = np.zeros((h, w))
+        for i in range(len(labels)):
+            if scores[i] > 0.8:
+                if labels[i] == 'Torso-skin':
+                    mask_neck += masks[i]
+                elif labels[i] == 'Face':
+                    mask_face += masks[i]
+                elif labels[i] == 'Human':
+                    mask_human += masks[i]
+                elif labels[i] == 'Hair':
+                    mask_hair += masks[i]
+                elif labels[i] == 'UpperClothes' or labels[i] == 'Coat':
+                    mask_cloth += masks[i]
+        mask_face = np.clip(mask_face, 0, 1)
+        mask_hair = np.clip(mask_hair, 0, 1)
+        mask_neck = np.clip(mask_neck, 0, 1)
+        mask_cloth = np.clip(mask_cloth, 0, 1)
+        mask_human = np.clip(mask_human, 0, 1)
+        if np.sum(mask_face) > 0:
+            soft_mask = np.clip(mask_face, 0, 1)
+            if ksize1 > 0:
+                kernel_size1 = int(np.sqrt(np.sum(soft_mask)) * ksize1)
+                kernel1 = np.ones((kernel_size1, kernel_size1))
+                soft_mask = cv2.dilate(soft_mask, kernel1, iterations=1)
+            if ksize > 0:
+                kernel_size = int(np.sqrt(np.sum(soft_mask)) * ksize)
+                kernel = np.ones((kernel_size, kernel_size))
+                soft_mask_dilate = cv2.dilate(soft_mask, kernel, iterations=1)
+                if warp_mask is not None:
+                    soft_mask_dilate = soft_mask_dilate * (np.clip(soft_mask + warp_mask[:, :, 0], 0, 1))
+                if eyeh > 0:
+                    soft_mask = np.concatenate((soft_mask[:eyeh], soft_mask_dilate[eyeh:]), axis=0)
+                else:
+                    soft_mask = soft_mask_dilate
+        else:
+            if ksize1 > 0:
+                kernel_size1 = int(np.sqrt(np.sum(soft_mask)) * ksize1)
+                kernel1 = np.ones((kernel_size1, kernel_size1))
+                soft_mask = cv2.dilate(mask_face, kernel1, iterations=1)
+            else:
+                soft_mask = mask_face
+        if include_neck:
+            soft_mask = np.clip(soft_mask + mask_neck, 0, 1)
+
+    if return_human:
+        mask_human = cv2.GaussianBlur(mask_human, (21, 21), 0) * mask_human
+        return soft_mask, mask_human
+    else:
+        return soft_mask
+
+
+def select_high_quality_face(input_img_dir):
+    input_img_dir = str(input_img_dir)
+    quality_score_list = []
+    abs_img_path_list = []
+    ## TODO
+    face_quality_func = pipeline(Tasks.face_quality_assessment, 'damo/cv_manual_face-quality-assessment_fqa',
+                                 model_revision='v2.0')
+
+    for img_name in os.listdir(input_img_dir):
+        if img_name.endswith('jsonl') or img_name.startswith('.ipynb') or img_name.startswith('.safetensors'):
+            continue
+
+        if img_name.endswith('jpg') or img_name.endswith('png'):
+            abs_img_name = os.path.join(input_img_dir, img_name)
+            face_quality_score = face_quality_func(abs_img_name)[OutputKeys.SCORES]
+            if face_quality_score is None:
+                quality_score_list.append(0)
+            else:
+                quality_score_list.append(face_quality_score[0])
+            abs_img_path_list.append(abs_img_name)
+
+    sort_idx = np.argsort(quality_score_list)[::-1]
+    print('Selected face: ' + abs_img_path_list[sort_idx[0]])
+
+    return Image.open(abs_img_path_list[sort_idx[0]])
+
+
+def face_swap_fn(use_face_swap, gen_results, template_face):
+    if use_face_swap:
+        ## TODO
+        out_img_list = []
+        image_face_fusion = pipeline('face_fusion_torch',
+                                     model='damo/cv_unet_face_fusion_torch', model_revision='v1.0.5')
+        segmentation_pipeline = pipeline(Tasks.image_segmentation, 'damo/cv_resnet101_image-multiple-human-parsing')
+        for img in gen_results:
+            result = image_face_fusion(dict(template=img, user=template_face))[OutputKeys.OUTPUT_IMG]
+            face_mask = segment(segmentation_pipeline, img, ksize=0.1)
+            result = (result * face_mask[:, :, None] + np.array(img)[:, :, ::-1] * (1 - face_mask[:, :, None])).astype(
+                np.uint8)
+            out_img_list.append(result)
+        return out_img_list
+    else:
+        ret_results = []
+        for img in gen_results:
+            ret_results.append(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
+        return ret_results
+
 
 class DigitalTaskType(IntEnum):
     Img2Img = 2  # 原本是1
@@ -475,6 +592,499 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
     #     elif task.minor_type == DigitalTaskType.Txt2Img:
     #         yield from self._exec_txt2img(task)
 
+    def _set_img_local_path(self, img) -> str:
+        tmp_path = "tmp"
+        random_name = str(uuid.uuid4())[:8]
+        img_path = os.path.join(tmp_path, "human-" + random_name + ".png")
+        # img.resize((w, h)).save(resize_path)
+        img.save(img_path)
+        img.close()
+
+        return img_path
+
+    def _set_mask_local_path(self, img) -> str:
+        tmp_path = "tmp"
+        random_name = str(uuid.uuid4())[:8]
+        mask_path = os.path.join(tmp_path, "mask-" + random_name + ".png")
+        face_model_path = os.path.join(os.getcwd(), "models")
+        mask = self._get_face_mask(img, face_model_path)
+        cv2.imwrite(mask_path, mask)
+        return mask_path
+
+    def _build_multi_t2i_tasks(self, t: Task, first_lora_train_dataset, second_lora_train_dataset):
+        tasks = []
+        lora_models = t["lora_models"]
+        base_prompt = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition,Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable,HDR,16K,details,The most authentic,Glossy solid color,(((realistic))),looking at viewer fine art photography style,close up,portrait composition,elephoto lens,photograph,HDR,"
+        terms = (x.strip() for x in str(t['prompt']).split(','))
+        # lora_prompt = [x for x in terms if x.startswith('<lora:')]
+        # t['prompt'] = base_prompt + ','.join(lora_prompt)
+        t['prompt'] = base_prompt
+        t[
+            'negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers, normal quality, ((monochrome)), ((grayscale)), logo, word, character, lowres, bad anatomy, bad hands, text,error, missing fngers,extra digt ,fewer digits,cropped, wort quality ,low quality,normal quality, jpeg artifacts,signature,watermark, username, blurry, bad feet​, ​lowres, bad anatomy, bad hands, text,error, missing fngers,extra digt ,fewer digits,cropped, wort quality ,low quality,normal quality, jpeg artifacts,signature,watermark, username, blurry, bad feet,hand,"
+
+        denoising_strengths = self._denoising_strengths(t)
+        init_images = self._get_init_images(t)
+        # init_image_masks = self._get_face_mask_double(init_images)
+
+        print("len(init_images):", len(init_images))
+
+        result = []
+        for init_image in init_images:
+            init_image_pil = Image.open(init_image)
+
+            face_detection = pipeline(task=Tasks.face_detection, model='damo/cv_ddsar_face-detection_iclr23-damofd',
+                                      model_revision='v1.1')
+            result_det = face_detection(init_image_pil)
+            bboxes = result_det['boxes']
+            # assert(len(bboxes)) == 2
+            bboxes = np.array(bboxes).astype(np.int16)
+            lefts = []
+            for bbox in bboxes:
+                lefts.append(bbox[0])
+            idxs = np.argsort(lefts)
+
+            face_box = bboxes[idxs[0]]
+            # inpaint_img_large = cv2.imread(self.inpaint_img)
+            inpaint_img_large = cv2.cvtColor(np.array(init_image_pil), cv2.COLOR_RGB2BGR)
+            mask_large = np.ones_like(inpaint_img_large)
+            mask_large1 = np.zeros_like(inpaint_img_large)
+            h, w, _ = inpaint_img_large.shape
+            for i in range(len(bboxes)):
+                if i != idxs[0]:
+                    bbox = bboxes[i]
+                    inpaint_img_large[bbox[1]:bbox[3], bbox[0]:bbox[2]] = 0
+                    mask_large[bbox[1]:bbox[3], bbox[0]:bbox[2]] = 0
+
+            face_ratio = 0.45
+            cropl = int(max(face_box[3] - face_box[1], face_box[2] - face_box[0]) / face_ratio / 2)
+            cx = int((face_box[2] + face_box[0]) / 2)
+            cy = int((face_box[1] + face_box[3]) / 2)
+            cropup = min(cy, cropl)
+            cropbo = min(h - cy, cropl)
+            crople = min(cx, cropl)
+            cropri = min(w - cx, cropl)
+            inpaint_img = np.pad(inpaint_img_large[cy - cropup:cy + cropbo, cx - crople:cx + cropri],
+                                 ((cropl - cropup, cropl - cropbo), (cropl - crople, cropl - cropri), (0, 0)),
+                                 'constant')
+            inpaint_img = cv2.resize(inpaint_img, (512, 512))
+            inpaint_img = Image.fromarray(inpaint_img[:, :, ::-1])
+            mask_large1[cy - cropup:cy + cropbo, cx - crople:cx + cropri] = 1
+            mask_large = mask_large * mask_large1
+
+            human_img_path1 = self._set_img_local_path(inpaint_img)
+            human_mask_path1 = self._set_mask_local_path(human_img_path1)
+
+            def get_alwayson_scripts(init_img: str, init_img_mask_path: str, denoising_strength: float):
+                return {
+                    ADetailer: {
+                        'args': [
+                            {
+                                "enabled": True,
+                                "ad_model": "face_yolov8n_v2.pt",
+                                "ad_prompt": "",
+                                "ad_negative_prompt": "",
+                                "ad_confidence": 0.3,
+                                "ad_dilate_erode": 4,
+                                "ad_mask_merge_invert": "None",
+                                "ad_mask_blur": 4,
+                                "ad_denoising_strength": denoising_strength,
+                                "ad_inpaint_only_masked": True,
+                                "ad_inpaint_only_masked_padding": 64
+                            },
+                            {
+                                "enabled": True,
+                                "ad_model": "face_yolov8n_v2.pt",
+                                "ad_prompt": "",
+                                "ad_negative_prompt": "",
+                                "ad_confidence": 0.3,
+                                "ad_dilate_erode": 4,
+                                "ad_mask_merge_invert": "None",
+                                "ad_mask_blur": 4,
+                                "ad_denoising_strength": denoising_strength - 0.1,
+                                "ad_inpaint_only_masked": True,
+                                "ad_inpaint_only_masked_padding": 64
+                            },
+                        ]
+                    },
+                    "ControlNet": {
+                        "args": [
+                            {
+                                "control_mode": "ControlNet is more important",
+                                "enabled": True,
+                                "guess_mode": False,
+                                "guidance_end": 1,
+                                "guidance_start": 0,
+                                "image": {
+                                    "image": init_img,
+                                    "mask": ""
+                                },
+                                "invert_image": False,
+                                "isShowModel": True,
+                                "low_vram": False,
+                                "model": "control_v11p_sd15_canny",
+                                "module": "canny",
+                                "pixel_perfect": True,
+                                "processor_res": 512,
+                                "resize_mode": "Crop and Resize",
+                                "tempMask": "",
+                                "threshold_a": 64,
+                                "threshold_b": 64,
+                                "weight": 0.35
+                            },
+                            {
+                                "control_mode": "ControlNet is more important",
+                                "enabled": True,
+                                "guess_mode": False,
+                                "guidance_end": 1,
+                                "guidance_start": 0,
+                                "image": {
+                                    "image": init_img,
+                                    "mask": ""
+                                },
+                                "invert_image": False,
+                                "isShowModel": True,
+                                "low_vram": False,
+                                "model": "control_v11p_sd15_openpose",
+                                "module": "openpose_faceonly",
+                                "pixel_perfect": True,
+                                "processor_res": 512,
+                                "resize_mode": "Crop and Resize",
+                                "tempMask": "",
+                                "threshold_a": 64,
+                                "threshold_b": 64,
+                                "weight": 0.35
+                            },
+                            {
+                                "control_mode": "Balanced",
+                                "enabled": True,
+                                "guess_mode": False,
+                                "guidance_end": 1,
+                                "guidance_start": 0,
+                                "image": {
+                                    "image": init_img,
+                                    "mask": init_img_mask_path
+                                },
+                                "invert_image": False,
+                                "isShowModel": True,
+                                "low_vram": False,
+                                "model": "control_v11p_sd15_inpaint",
+                                "module": "inpaint_only",
+                                "pixel_perfect": True,
+                                "processor_res": 512,
+                                "resize_mode": "Crop and Resize",
+                                "tempMask": "",
+                                "threshold_a": 64,
+                                "threshold_b": 64,
+                                "weight": 1
+                            },
+                        ]
+                    }
+                }
+
+            # # select_high_quality_face PIL
+            # selected_face = select_high_quality_face(input_img_dir1)
+            # # face_swap cv2
+            # swap_results = face_swap_fn(self.use_face_swap, gen_results, selected_face)
+            # # stylization
+            # final_gen_results = swap_results
+
+            # if not merge_task:
+
+            # for i, denoising_strength in enumerate(denoising_strengths):
+            denoising_strength = 0.5
+            t['denoising_strength'] = 0.1
+            t['n_iter'] = 1
+            t['batch_size'] = 1
+
+            init_img = human_img_path1
+            init_img_mask_path = human_mask_path1
+
+            print("init_img, init_img_mask_path:", init_img, init_img_mask_path)
+            t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
+            # tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
+            # else:
+            #     init_image_count = defaultdict(int)
+            #     for image_path in init_images:
+            #         init_image_count[image_path] += 1
+            #     for init_img, count in init_image_count.items():
+            #         i = init_images.index(init_img) + count - 1
+            #         denoising_strength = denoising_strengths[i]
+            #         t['denoising_strength'] = denoising_strength
+            #         t['n_iter'] = count
+            #         t['batch_size'] = 1
+
+            #         init_img = init_images[i] if len(init_images) > i else init_images[0]
+            #         init_img_mask_path = init_image_masks[init_img]
+
+            #         # img = Image.open(init_img)
+            #         # t['width'] = 512
+            #         # t['height'] = 768 if img.height % 768 == 0 else 512  # 仅支持512和768两个分辨率
+            #         # img.close()
+
+            #         t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
+            #         # tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
+            # t["lora_models"] = lora_models[0]
+            parts = lora_models[0].split('/')
+            lora_name = parts[-1].split('.')[0]
+            t["prompt"] = base_prompt + "<lora:" + lora_name + ":0.9>"
+            task = Txt2ImgTask.from_task(t, self.default_script_args)
+            task.do_not_save_grid = True
+            processed = process_images(task)
+            gen_results = processed.images[0]
+
+            input_img_dir1 = first_lora_train_dataset
+
+            if input_img_dir1 is not None:
+                # select_high_quality_face PIL
+                selected_face = select_high_quality_face(input_img_dir1)
+                # face_swap cv2
+                swap_results = face_swap_fn(True, [gen_results], selected_face)
+                # stylization
+                final_gen_results = swap_results
+
+            else:
+                final_gen_results = [cv2.cvtColor(np.array(gen_results), cv2.COLOR_RGB2BGR)]
+            # print(len(final_gen_results))
+
+            final_gen_results_new = []
+            # inpaint_img_large = cv2.imread(self.inpaint_img)
+            inpaint_img_large = cv2.cvtColor(np.array(init_image_pil), cv2.COLOR_RGB2BGR)
+            ksize = int(10 * cropl / 256)
+            # for i in range(len(final_gen_results)):
+
+            print('Start cropping.')
+            # rst_gen = cv2.resize(final_gen_results, (cropl * 2, cropl * 2))
+            rst_gen = cv2.resize(final_gen_results[0], (cropl * 2, cropl * 2))
+            rst_crop = rst_gen[cropl - cropup:cropl + cropbo, cropl - crople:cropl + cropri]
+            print(rst_crop.shape)
+            inpaint_img_rst = np.zeros_like(inpaint_img_large)
+            print('Start pasting.')
+            print("第一次paste,inpaint_img_rst的形状,inpaint_img_rst.shape, rst_crop.shape:", inpaint_img_rst.shape,
+                  rst_crop.shape)
+            inpaint_img_rst[cy - cropup:cy + cropbo, cx - crople:cx + cropri] = rst_crop
+            print('Fininsh pasting.')
+            print(inpaint_img_rst.shape, mask_large.shape, inpaint_img_large.shape)
+            mask_large = mask_large.astype(np.float32)
+            kernel = np.ones((ksize * 2, ksize * 2))
+            mask_large1 = cv2.erode(mask_large, kernel, iterations=1)
+            mask_large1 = cv2.GaussianBlur(mask_large1, (int(ksize * 1.8) * 2 + 1, int(ksize * 1.8) * 2 + 1), 0)
+            mask_large1[face_box[1]:face_box[3], face_box[0]:face_box[2]] = 1
+            mask_large = mask_large * mask_large1
+            final_inpaint_rst = (
+                    inpaint_img_rst.astype(np.float32) * mask_large.astype(np.float32) + inpaint_img_large.astype(
+                np.float32) * (1.0 - mask_large.astype(np.float32))).astype(np.uint8)
+            print('Finish masking.')
+            final_gen_results_new.append(final_inpaint_rst)
+            print('Finish generating.')
+
+        face_box = bboxes[idxs[1]]
+        mask_large = np.ones_like(inpaint_img_large)
+        mask_large1 = np.zeros_like(inpaint_img_large)
+        h, w, _ = inpaint_img_large.shape
+        for i in range(len(bboxes)):
+            if i != idxs[1]:
+                bbox = bboxes[i]
+                inpaint_img_large[bbox[1]:bbox[3], bbox[0]:bbox[2]] = 0
+                mask_large[bbox[1]:bbox[3], bbox[0]:bbox[2]] = 0
+
+        face_ratio = 0.45
+        cropl = int(max(face_box[3] - face_box[1], face_box[2] - face_box[0]) / face_ratio / 2)
+        cx = int((face_box[2] + face_box[0]) / 2)
+        cy = int((face_box[1] + face_box[3]) / 2)
+        cropup = min(cy, cropl)
+        cropbo = min(h - cy, cropl)
+        crople = min(cx, cropl)
+        cropri = min(w - cx, cropl)
+        mask_large1[cy - cropup:cy + cropbo, cx - crople:cx + cropri] = 1
+        mask_large = mask_large * mask_large1
+
+        # inpaint_imgs = []
+        # for i in range(1):
+        # inpaint_img_large = final_gen_results_new[i] * mask_large
+        inpaint_img = np.pad(inpaint_img_large[cy - cropup:cy + cropbo, cx - crople:cx + cropri],
+                             ((cropl - cropup, cropl - cropbo), (cropl - crople, cropl - cropri), (0, 0)), 'constant')
+        inpaint_img = cv2.resize(inpaint_img, (512, 512))
+        inpaint_img = Image.fromarray(inpaint_img[:, :, ::-1])
+        # inpaint_imgs.append(inpaint_img)
+
+        human_img_path2 = self._set_img_local_path(inpaint_img)
+        human_mask_path2 = self._set_mask_local_path(human_img_path2)
+
+        def get_alwayson_scripts(init_img: str, init_img_mask_path: str, denoising_strength: float):
+            return {
+                ADetailer: {
+                    'args': [
+                        {
+                            "enabled": True,
+                            "ad_model": "face_yolov8n_v2.pt",
+                            "ad_prompt": "",
+                            "ad_negative_prompt": "",
+                            "ad_confidence": 0.3,
+                            "ad_dilate_erode": 4,
+                            "ad_mask_merge_invert": "None",
+                            "ad_mask_blur": 4,
+                            "ad_denoising_strength": denoising_strength,
+                            "ad_inpaint_only_masked": True,
+                            "ad_inpaint_only_masked_padding": 64
+                        },
+                        {
+                            "enabled": True,
+                            "ad_model": "face_yolov8n_v2.pt",
+                            "ad_prompt": "",
+                            "ad_negative_prompt": "",
+                            "ad_confidence": 0.3,
+                            "ad_dilate_erode": 4,
+                            "ad_mask_merge_invert": "None",
+                            "ad_mask_blur": 4,
+                            "ad_denoising_strength": denoising_strength - 0.1,
+                            "ad_inpaint_only_masked": True,
+                            "ad_inpaint_only_masked_padding": 64
+                        },
+                    ]
+                },
+                "ControlNet": {
+                    "args": [
+                        {
+                            "control_mode": "ControlNet is more important",
+                            "enabled": True,
+                            "guess_mode": False,
+                            "guidance_end": 1,
+                            "guidance_start": 0,
+                            "image": {
+                                "image": init_img,
+                                "mask": ""
+                            },
+                            "invert_image": False,
+                            "isShowModel": True,
+                            "low_vram": False,
+                            "model": "control_v11p_sd15_canny",
+                            "module": "canny",
+                            "pixel_perfect": True,
+                            "processor_res": 512,
+                            "resize_mode": "Crop and Resize",
+                            "tempMask": "",
+                            "threshold_a": 64,
+                            "threshold_b": 64,
+                            "weight": 0.35
+                        },
+                        {
+                            "control_mode": "ControlNet is more important",
+                            "enabled": True,
+                            "guess_mode": False,
+                            "guidance_end": 1,
+                            "guidance_start": 0,
+                            "image": {
+                                "image": init_img,
+                                "mask": ""
+                            },
+                            "invert_image": False,
+                            "isShowModel": True,
+                            "low_vram": False,
+                            "model": "control_v11p_sd15_openpose",
+                            "module": "openpose_faceonly",
+                            "pixel_perfect": True,
+                            "processor_res": 512,
+                            "resize_mode": "Crop and Resize",
+                            "tempMask": "",
+                            "threshold_a": 64,
+                            "threshold_b": 64,
+                            "weight": 0.35
+                        },
+                        {
+                            "control_mode": "Balanced",
+                            "enabled": True,
+                            "guess_mode": False,
+                            "guidance_end": 1,
+                            "guidance_start": 0,
+                            "image": {
+                                "image": init_img,
+                                "mask": init_img_mask_path
+                            },
+                            "invert_image": False,
+                            "isShowModel": True,
+                            "low_vram": False,
+                            "model": "control_v11p_sd15_inpaint",
+                            "module": "inpaint_only",
+                            "pixel_perfect": True,
+                            "processor_res": 512,
+                            "resize_mode": "Crop and Resize",
+                            "tempMask": "",
+                            "threshold_a": 64,
+                            "threshold_b": 64,
+                            "weight": 1
+                        },
+                    ]
+                }
+            }
+
+        # for i, denoising_strength in enumerate(denoising_strengths):
+        denoising_strength = 0.5
+        t['denoising_strength'] = 0.1
+        t['n_iter'] = 1
+        t['batch_size'] = 1
+
+        init_img = human_img_path2
+        init_img_mask_path = human_mask_path2
+
+        print("init_img, init_img_mask_path:", init_img, init_img_mask_path)
+        t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
+
+        # t["lora_models"] = lora_models[1]
+        parts = lora_models[1].split('/')
+        lora_name = parts[-1].split('.')[0]
+        t["prompt"] = base_prompt + "<lora:" + lora_name + ":0.9>"
+        task = Txt2ImgTask.from_task(t, self.default_script_args)
+        task.do_not_save_grid = True
+        processed = process_images(task)
+        gen_results = processed.images[0]
+
+        input_img_dir2 = second_lora_train_dataset
+
+        if input_img_dir2 is not None:
+            selected_face = select_high_quality_face(input_img_dir2)
+            # face_swap cv2
+            swap_results = face_swap_fn(True, [gen_results], selected_face)
+            # stylization
+            final_gen_results = swap_results
+        else:
+
+            # stylization
+            final_gen_results = [cv2.cvtColor(np.array(gen_results), cv2.COLOR_RGB2BGR)]
+        # print(len(final_gen_results))
+
+        final_gen_results_final = []
+        # inpaint_img_large = cv2.imread(self.inpaint_img)
+        inpaint_img_large = cv2.cvtColor(np.array(init_image_pil), cv2.COLOR_RGB2BGR)
+        ksize = int(10 * cropl / 256)
+        print('Start cropping.')
+        # rst_gen = cv2.resize(final_gen_results, (cropl * 2, cropl * 2))
+        rst_gen = cv2.resize(final_gen_results[0], (cropl * 2, cropl * 2))
+        rst_crop = rst_gen[cropl - cropup:cropl + cropbo, cropl - crople:cropl + cropri]
+        print(rst_crop.shape)
+        inpaint_img_rst = np.zeros_like(inpaint_img_large)
+        print('Start pasting.')
+        print("第二次paste,inpaint_img_rst的形状,inpaint_img_rst.shape, rst_crop.shape:", inpaint_img_rst.shape,
+              rst_crop.shape)
+        inpaint_img_rst[cy - cropup:cy + cropbo, cx - crople:cx + cropri] = rst_crop
+        print('Fininsh pasting.')
+        print(inpaint_img_rst.shape, mask_large.shape, inpaint_img_large.shape)
+        mask_large = mask_large.astype(np.float32)
+        kernel = np.ones((ksize * 2, ksize * 2))
+        mask_large1 = cv2.erode(mask_large, kernel, iterations=1)
+        mask_large1 = cv2.GaussianBlur(mask_large1, (int(ksize * 1.8) * 2 + 1, int(ksize * 1.8) * 2 + 1), 0)
+        mask_large1[face_box[1]:face_box[3], face_box[0]:face_box[2]] = 1
+        mask_large = mask_large * mask_large1
+        final_inpaint_rst = (inpaint_img_rst.astype(np.float32) * mask_large.astype(np.float32) + final_gen_results_new[
+            0].astype(np.float32) * (1.0 - mask_large.astype(np.float32))).astype(np.uint8)
+        print('Finish masking.')
+        final_gen_results_final.append(final_inpaint_rst)
+        print('Finish generating.')
+
+        processed.images = [Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB)) for result in
+                            final_gen_results_final]
+
+        return final_gen_results_final, processed, task
+
     def _exec_img2img(self, task: Task) -> typing.Iterable[TaskProgress]:
         time_start = time.time()
         base_model_path = self._get_local_checkpoint(task)
@@ -630,6 +1240,11 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
     def _exec_multi_portrait(self, task: Task):
         self._refresh_default_script_args()
+        print("self.default_script_args:", self.default_script_args)
+
+        print("task:", task)
+
+        print("type(task):", type(task))
         multi_process_task = MultiGenDigitalPhotoTask.from_task(task, self.default_script_args)
         # 加载底模
         base_model_path = self._get_local_checkpoint(task)
@@ -645,13 +1260,40 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         # 第2个LORA图片所在目录
         second_lora_train_dataset = train_image_dirs[1]
 
-        # todo: 生图逻辑
+        final_image, processed, out_task = self._build_multi_t2i_tasks(task, first_lora_train_dataset,
+                                                                       second_lora_train_dataset)
 
-        images = {
-            'samples': {
-                'high': []  # 原图KEY
-            }
-        }
+        progress.status = TaskStatus.Uploading
+        yield progress
+        all_seeds = []
+        all_subseeds = []
+        all_seeds.extend(processed.all_seeds)
+        all_subseeds.extend(processed.all_subseeds)
+
+        task['all_seed'] = all_seeds
+        task['all_sub_seed'] = all_subseeds
+
+        print("task:", task)
+        print("out_task:", out_task)
+
+        out_task.id = task["task_id"]
+        images = save_processed_images(processed,
+                                       out_task.outpath_samples,
+                                       out_task.outpath_grids,
+                                       out_task.outpath_scripts,
+                                       out_task.id,
+                                       inspect=False,
+                                       forbidden_review=True)
+
+        # # todo: 生图逻辑
+
+        # images = {
+        #     'samples': {
+        #         'high': []  # 原图KEY
+        #     }
+        # }
         progress = TaskProgress.new_finish(task, images)
+        yield progress
 
+        progress.update_seed(all_seeds, all_subseeds)
         yield progress
