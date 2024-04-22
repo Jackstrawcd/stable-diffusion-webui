@@ -31,10 +31,68 @@ from loguru import logger
 from tools.wrapper import FuncExecTimeWrapper
 from collections import defaultdict
 
+from transformers import PreTrainedTokenizerBase, PreTrainedModel
+from sd_scripts.library.transformers_pretrained import ori_tokenizer_from_pretrained, ori_model_from_pretrained
+
 from modelscope.outputs import OutputKeys
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
+from modelscope import snapshot_download
 
+def patch_tokenizer_base():
+    """ Monkey patch PreTrainedTokenizerBase.from_pretrained to adapt to modelscope hub.
+    """
+    ori_from_pretrained = ori_tokenizer_from_pretrained
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args,
+                        **kwargs):
+        ignore_file_pattern = [r'\w+\.bin', r'\w+\.safetensors']
+        if "use_modelscope" in kwargs:
+            if not os.path.exists(pretrained_model_name_or_path):
+                revision = kwargs.pop('revision', None)
+                model_dir = snapshot_download(
+                    pretrained_model_name_or_path,
+                    revision=revision,
+                    ignore_file_pattern=ignore_file_pattern)
+            else:
+                model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+        else:
+            model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+
+    PreTrainedTokenizerBase.from_pretrained = from_pretrained
+
+
+def patch_model_base():
+    """ Monkey patch PreTrainedModel.from_pretrained to adapt to modelscope hub.
+    """
+    ori_from_pretrained = ori_model_from_pretrained
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args,
+                        **kwargs):
+        ignore_file_pattern = [r'\w+\.safetensors']
+        if "use_modelscope" in kwargs:
+            if not os.path.exists(pretrained_model_name_or_path):
+                revision = kwargs.pop('revision', None)
+                model_dir = snapshot_download(
+                    pretrained_model_name_or_path,
+                    revision=revision,
+                    ignore_file_pattern=ignore_file_pattern)
+            else:
+                model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+        else:
+            model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+
+    PreTrainedModel.from_pretrained = from_pretrained
+
+
+patch_tokenizer_base()
+patch_model_base()
 
 def segment(segmentation_pipeline, img, ksize=0, eyeh=0, ksize1=0, include_neck=False, warp_mask=None,
             return_human=False):
