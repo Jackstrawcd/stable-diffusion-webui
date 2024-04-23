@@ -595,6 +595,88 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
                 ret_results.append(cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
             return ret_results
 
+    def _get_multi_face_mask(self, image, model_path):
+
+        # 加载人脸关键点检测器
+        face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
+        if not os.path.isfile(face_model):
+            import requests
+            print("download shape_predictor_68_face_landmarks.dat from xingzheassert.obs.cn-north-4.myhuaweicloud.com")
+            resp = requests.get(
+                'https://xingzheassert.obs.cn-north-4.myhuaweicloud.com/sd-web/resource/face/shape_predictor_68_face_landmarks.dat')
+            if resp:
+                dirname = os.path.dirname(face_model)
+                os.makedirs(dirname, exist_ok=True)
+                filepath = os.path.join("tmp", 'shape_predictor_68_face_landmarks.dat')
+                os.makedirs('tmp', exist_ok=True)
+                chunk_size = 1024
+
+                with open(filepath, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+
+                if os.path.isfile(filepath):
+                    shutil.move(filepath, face_model)
+
+        if not os.path.isfile(face_model):
+            raise OSError(f'cannot found model:{face_model}')
+        predictor = dlib.shape_predictor(face_model)
+
+        # image_tmp_local_path = get_tmp_local_path(image)
+        # image = Image.open(image_tmp_local_path)
+        image = np.array(image.convert("RGB"))
+
+        if not isinstance(image, (Image.Image, np.ndarray)):
+            print("底图有错误")
+            return None
+
+        # 将图像转换为灰度图
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # 使用人脸检测器检测人脸
+        detector = dlib.get_frontal_face_detector()
+        faces = detector(gray)
+
+        # 创建一个与原始图像相同大小的掩膜
+        mask = np.zeros_like(image)
+
+        # 遍历检测到的人脸
+        # print(len(faces))
+        if len(faces) != 2:
+            print(f"cannot detect face:{f}, result:{len(faces)}")
+            return None
+
+        # white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
+
+        result = {}
+        result["boxes"] = []
+        for face in faces:
+            # 检测人脸关键点
+            landmarks = predictor(gray, face)
+
+            # 提取人脸轮廓
+            points = []
+            for n in range(68):
+                x = landmarks.part(n).x
+                y = landmarks.part(n).y
+                points.append((x, y))
+
+            # 计算所有点的最小和最大坐标值
+            min_x = min(point[0] for point in points)
+            max_x = max(point[0] for point in points)
+            min_y = min(point[1] for point in points)
+            max_y = max(point[1] for point in points)
+            # 将矩形区域设置为黑色
+            result["boxes"].append([min_x, min_y, max_x, max_y])
+        # cv2.rectangle(mask, (min_x, min_y), (max_x, max_y), (255, 255, 255), -1)
+
+        # 将蒙版应用到原始图像上
+        # 将mask应用于原始图像
+        # result = cv2.bitwise_and(white_background, mask)
+
+        return result
+
     def _get_init_images(self, t: Task):
         images = (t.get('init_img') or "").split(',')
         n_iter = t.get('n_iter') or 1
@@ -649,9 +731,11 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         init_image = init_images[0]
         init_image_pil = Image.open(init_image)
         # 检测人脸
-        face_detection = pipeline(task=Tasks.face_detection, model='damo/cv_ddsar_face-detection_iclr23-damofd',
-                                  model_revision='v1.1')
-        result_det = face_detection(init_image_pil)
+        # face_detection = pipeline(task=Tasks.face_detection, model='damo/cv_ddsar_face-detection_iclr23-damofd',
+        #                           model_revision='v1.1')
+        # result_det = face_detection(init_image_pil)
+        face_model_path = os.path.join(os.getcwd(), "models")
+        result_det = self._get_multi_face_mask(init_image_pil, face_model_path)
         bboxes = result_det['boxes']
         # assert(len(bboxes)) == 2
         bboxes = np.array(bboxes).astype(np.int16)

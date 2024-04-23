@@ -837,13 +837,13 @@ def seg_face(input_path, output_path, model_path):
             continue
 
         white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
+        points = []
 
         for face in faces:
             # 检测人脸关键点
             landmarks = predictor(gray, face)
 
             # 提取人脸轮廓
-            points = []
             for n in range(68):
                 x = landmarks.part(n).x
                 y = landmarks.part(n).y
@@ -857,10 +857,10 @@ def seg_face(input_path, output_path, model_path):
         face_image = cv2.bitwise_or(image, white_background)
 
         # 计算所有点的最小和最大坐标值
-        min_x = min(point[0] for point in points)
-        max_x = max(point[0] for point in points)
-        min_y = min(point[1] for point in points)
-        max_y = max(point[1] for point in points)
+        min_x = min(max(0, point[0]) for point in points)  # 确保最小值不小于0
+        max_x = max(min(image.shape[1], point[0]) for point in points)  # 确保最大值不超过图像宽度
+        min_y = min(max(0, point[1]) for point in points)  # 确保最小值不小于0
+        max_y = max(min(image.shape[0], point[1]) for point in points)
         cropped_face = face_image[min_y:max_y, min_x:max_x]
 
         cropped_face_pil = Image.fromarray(cropped_face)
@@ -890,6 +890,7 @@ def seg_face(input_path, output_path, model_path):
         face_files.append(full)
         print(f"detect face {f}({i}) ==> ok")
     return face_files
+
 
 def train_callback(percentage):
     print(percentage)
@@ -1075,14 +1076,34 @@ def train_auto(
     new_head_list = []
     head_list = face_detect(image_list=body_list)
 
+    # 限制的最大尺寸
+    def resize_image(image, max_size=2048):
+        cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        # 获取图像尺寸
+        height, width, _ = cv_img.shape
+
+        # 如果任一边超过限制尺寸
+        if height * width > max_size * max_size:
+            # 计算长边和短边的比例
+            if height > width:
+                scale_factor = max_size / height
+            else:
+                scale_factor = max_size / width
+
+            # 调整尺寸
+            new_height = int(height * scale_factor)
+            new_width = int(width * scale_factor)
+            return cv2.resize(cv_img, (new_width, new_height))
+        return cv_img
+
     if gender == 2:
         for body_img in body_list:
-            # body_img = Image.fromarray(cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+            body_img = resize_image(body_img)
             body_img = cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
             new_body_list.append(body_img)
 
     for head_img in head_list:
-        # head_img = Image.fromarray(cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+        head_img = resize_image(head_img)
         head_img = cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
         new_head_list.append(head_img)
 
