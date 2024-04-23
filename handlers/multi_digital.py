@@ -232,7 +232,7 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
         select_script_name, select_script_args = None, None
         prompt = task.get('prompt', '')
         negative_prompt = task.get('negative_prompt', '')
-        lora_meta_array = task.pop('lora_meta_array')
+        lora_meta_array = task.get('lora_meta_array')
 
         if select_script:
             if not isinstance(select_script, dict):
@@ -249,6 +249,9 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
         kwargs.pop('prompt')
         kwargs.pop('negative_prompt')
         kwargs.pop('user_id')
+        if 'lora_meta_array' in kwargs:
+            kwargs.pop('lora_meta_array')
+
         if 'select_script' in kwargs:
             kwargs.pop('select_script')
         if 'select_script_name' in kwargs:
