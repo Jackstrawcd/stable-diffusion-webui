@@ -857,10 +857,10 @@ def seg_face(input_path, output_path, model_path):
         face_image = cv2.bitwise_or(image, white_background)
 
         # 计算所有点的最小和最大坐标值
-        min_x = min(point[0] for point in points)
-        max_x = max(point[0] for point in points)
-        min_y = min(point[1] for point in points)
-        max_y = max(point[1] for point in points)
+        min_x = min(max(0, point[0]) for point in points)  # 确保最小值不小于0
+        max_x = max(min(image.shape[1], point[0]) for point in points)  # 确保最大值不超过图像宽度
+        min_y = min(max(0, point[1]) for point in points)  # 确保最小值不小于0
+        max_y = max(min(image.shape[0], point[1]) for point in points)  # 确保最大值不超过图像高度
         cropped_face = face_image[min_y:max_y, min_x:max_x]
 
         cropped_face_pil = Image.fromarray(cropped_face)
@@ -1075,15 +1075,52 @@ def train_auto(
     new_head_list = []
     head_list = face_detect(image_list=body_list)
 
+    # 限制的最大尺寸
+    max_size = 2048
+
     if gender == 2:
         for body_img in body_list:
+            body_img = cv2.cvtColor(np.array(body_img), cv2.COLOR_RGB2BGR)
+            # 获取图像尺寸
+            height, width, _ = body_img.shape
+
+            # 如果任一边超过限制尺寸
+            if height * width > max_size * max_size:
+                # 计算长边和短边的比例
+                if height > width:
+                    scale_factor = max_size / height
+                else:
+                    scale_factor = max_size / width
+
+                # 调整尺寸
+                new_height = int(height * scale_factor)
+                new_width = int(width * scale_factor)
+                body_img = cv2.resize(body_img, (new_width, new_height))
+
             # body_img = Image.fromarray(cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
-            body_img = cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
+            body_img = skin_retouching(body_img)[OutputKeys.OUTPUT_IMG]
             new_body_list.append(body_img)
 
     for head_img in head_list:
+        head_img = cv2.cvtColor(np.array(head_img), cv2.COLOR_RGB2BGR)
+        # 获取图像尺寸
+        height, width, _ = head_img.shape
+
+        # 如果任一边超过限制尺寸
+        if height * width > max_size * max_size:
+            # 计算长边和短边的比例
+            if height > width:
+                scale_factor = max_size / height
+            else:
+                scale_factor = max_size / width
+
+            # 调整尺寸
+            new_height = int(height * scale_factor)
+            new_width = int(width * scale_factor)
+            head_img = cv2.resize(head_img, (new_width, new_height))
+
         # head_img = Image.fromarray(cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
-        head_img = cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
+        head_img = skin_retouching(head_img)[OutputKeys.OUTPUT_IMG]
         new_head_list.append(head_img)
 
     del skin_retouching
