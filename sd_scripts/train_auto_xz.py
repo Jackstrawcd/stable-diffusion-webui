@@ -1098,7 +1098,7 @@ def train_auto(
                 body_img = cv2.resize(body_img, (new_width, new_height))
 
             # body_img = Image.fromarray(cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
-            body_img = skin_retouching(body_img)[OutputKeys.OUTPUT_IMG]
+            body_img = cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
             new_body_list.append(body_img)
 
     for head_img in head_list:
@@ -1120,7 +1120,7 @@ def train_auto(
             head_img = cv2.resize(head_img, (new_width, new_height))
 
         # head_img = Image.fromarray(cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
-        head_img = skin_retouching(head_img)[OutputKeys.OUTPUT_IMG]
+        head_img = cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
         new_head_list.append(head_img)
 
     del skin_retouching
