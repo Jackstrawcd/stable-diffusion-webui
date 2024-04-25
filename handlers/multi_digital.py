@@ -527,8 +527,6 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
 
             out_img_list = []
             image_face_fusion = pipeline('face_fusion_torch',
-                                         providers=['CUDAExecutionProvider',
-                                                    'CPUExecutionProvider'],
                                          model='damo/cv_unet_face_fusion_torch',
                                          model_revision='v1.0.5')
             segmentation_pipeline = pipeline(Tasks.image_segmentation, 'damo/cv_resnet101_image-multiple-human-parsing')
