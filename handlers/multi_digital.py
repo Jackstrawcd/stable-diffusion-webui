@@ -526,9 +526,9 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         if use_face_swap:
 
             out_img_list = []
-            image_face_fusion = pipeline('face_fusion_torch',
-                                         model='damo/cv_unet_face_fusion_torch',
-                                         model_revision='v1.0.5')
+            # image_face_fusion = pipeline('face_fusion_torch',
+            #                              model='damo/cv_unet_face_fusion_torch',
+            #                              model_revision='v1.0.5')
 
             image_face_fusion = pipeline(Tasks.image_face_fusion,
                                          model='damo/cv_unet-image-face-fusion_damo')
