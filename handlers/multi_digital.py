@@ -25,9 +25,6 @@ from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
 
 
-
-
-
 class MultiGenDigitalPhotoLoraMeta:
 
     def __init__(self, image_keys: typing.Sequence[str], lora_key: str):
@@ -39,9 +36,10 @@ class MultiGenDigitalPhotoLoraMeta:
             tmp = get_tmp_local_path(key)
             if not tmp:
                 continue
-            # 移动到特定目录下。
             local = os.path.join(self.dirname, os.path.basename(tmp))
-            shutil.move(tmp, local)
+            # 移动到特定目录下。
+            if not os.path.isfile(local):
+                shutil.copy(tmp, local)
             self.images.append(local)
 
 
