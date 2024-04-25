@@ -524,9 +524,13 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         if use_face_swap:
 
             out_img_list = []
-            image_face_fusion = pipeline('face_fusion_torch',
-                                         model='damo/cv_unet_face_fusion_torch',
-                                         model_revision='v1.0.5')
+            # image_face_fusion = pipeline('face_fusion_torch',
+            #                              model='damo/cv_unet_face_fusion_torch',
+            #                              model_revision='v1.0.5')
+
+            image_face_fusion = pipeline(Tasks.image_face_fusion,
+                                         model='damo/cv_unet-image-face-fusion_damo')
+
             segmentation_pipeline = pipeline(Tasks.image_segmentation, 'damo/cv_resnet101_image-multiple-human-parsing')
             for img in gen_results:
                 result = image_face_fusion(dict(template=img, user=template_face))[OutputKeys.OUTPUT_IMG]
