@@ -5,6 +5,7 @@
 # @Site    : 
 # @File    : multi_digital.py
 # @Software: xingzhe.ai
+import copy
 import random
 import typing
 import uuid
@@ -650,7 +651,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         return local_images
 
     def gen_portraits(self, t: Task):
-
+        orig_task = copy.deepcopy(t)
         base_prompt = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition," \
                       "Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details," \
                       "Unbelievable,HDR,16K,details,The most authentic,Glossy solid color,(((realistic)))," \
@@ -899,7 +900,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
                                        inspect=False,
                                        forbidden_review=True)
 
-        progress = TaskProgress.new_finish(t, images)
+        progress = TaskProgress.new_finish(orig_task, images)
         yield progress
 
 
