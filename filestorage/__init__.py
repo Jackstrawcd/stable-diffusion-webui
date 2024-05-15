@@ -15,7 +15,10 @@ from urllib.parse import urlparse
 from tools.environment import Env_EndponitKey
 
 
-def find_storage_classes_with_env():
+def find_storage_classes_with_env(remoting=None):
+    if remoting and str(remoting).lower().startswith('http'):
+        return PrivatizationFileStorage
+
     endpoint = os.getenv(Env_EndponitKey)
     if not endpoint:
         logger.warning('[storage] > cannot found storage system config, use local file storage system!!!')
@@ -46,7 +49,7 @@ def get_local_path(remoting, local, storage_cls=None, progress_callback=None, wi
                    locker_exp=None, flocker=True):
     if os.path.isfile(local):
         return local
-    storage_cls = storage_cls or find_storage_classes_with_env()
+    storage_cls = storage_cls or find_storage_classes_with_env(remoting)
     with storage_cls() as s:
         if not with_locker:
             return s.download(remoting, local, progress_callback)

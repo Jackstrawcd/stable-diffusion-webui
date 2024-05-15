@@ -19,7 +19,7 @@ from datetime import datetime
 from tools import TempDir as Tmp
 from PIL.PngImagePlugin import PngInfo
 from tools.wrapper import FuncExecTimeWrapper
-from modules.shared import cmd_opts
+from urllib.parse import urlparse
 from modules.processing import Processed
 from modules.scripts import Script, ScriptRunner
 from tools.environment import S3Tmp, S3SDWEB, enable_download_locker
@@ -108,7 +108,10 @@ def get_tmp_local_path(remoting_path: str):
         return remoting_path
 
     os.makedirs(Tmp, exist_ok=True)
-    _, ex = os.path.splitext(remoting_path)
+    if not remoting_path.lower().startswith('http'):
+        _, ex = os.path.splitext(remoting_path)
+    else:
+        _, ex = os.path.splitext(urlparse(remoting_path).path)
 
     md5 = hashlib.md5()
     md5.update(remoting_path.encode())

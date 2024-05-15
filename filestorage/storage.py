@@ -83,7 +83,10 @@ def http_request(url, method='GET', headers=None, cookies=None, data=None, timeo
                 _headers['User-Agent'] = random.choice(USER_AGENTS)
             kwargs['headers'] = _headers
             if method == 'GET':
-                res = requests.get(url, data, **kwargs)
+                if data:
+                    query_string = '&'.join(["{}={}".format(k, v) for k, v in data.items()])
+                    url += '?' + query_string
+                res = requests.get(url, **kwargs)
             elif method == 'PUT':
                 res = requests.put(url, data, **kwargs)
             elif method == 'DELETE':
@@ -329,13 +332,18 @@ class PrivatizationFileStorage(FileStorage):
         if 'http' not in remoting_path.lower():
             raise OSError(f'unsupported file:{remoting_path}')
 
-        filename = os.path.basename(remoting_path)
+        filename = os.path.basename(urlparse(remoting_path).path)
         filepath = os.path.join(self.tmp_dir, filename)
         if not os.path.isfile(filepath):
             self.logger.info(f"download url: {remoting_path}...")
-            resp = http_request(remoting_path)
-            if resp:
+            headers = {
+                'Accept-Language': 'zh-cn',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 
+            }
+            resp = http_request(remoting_path, headers=headers)
+            if resp:
                 if 'Content-Disposition' in resp.headers:
                     cd = resp.headers.get('Content-Disposition')
                     map = dict(
@@ -344,7 +352,6 @@ class PrivatizationFileStorage(FileStorage):
                         filename = map['filename'].strip('"')
 
                 chunk_size = 512
-
                 self.logger.info(f"save to {filename} ...")
                 with open(filepath, 'wb') as f:
                     for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -353,7 +360,8 @@ class PrivatizationFileStorage(FileStorage):
 
                 if os.path.isdir(local_path):
                     local_path = os.path.join(local_path, filename)
-        shutil.move(filepath, local_path)
+        if os.path.isfile(filepath):
+            shutil.move(filepath, local_path)
         return local_path
 
     def upload(self, local_path, remoting_path) -> str:
