@@ -49,6 +49,7 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
     def __init__(self, base_model_path: str,
                  user_id: str,
                  lora_meta_array: typing.Sequence[typing.Mapping],  # LORA1, LORA2配置
+                 init_img: str, # 底图
                  default_script_arg_txt2img: typing.Sequence,  # 默认脚本参数，handler构造。
                  prompt: str,  # TAG
                  negative_prompt: str,  # 反向TAG
@@ -141,6 +142,7 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
         if len(lora_meta_array) != 2:
             raise ValueError('lora count error')
 
+        self.init_img = init_img
         for i, meta in enumerate(lora_meta_array):
             lora_key = meta['lora_key']
             images = meta['image_keys']
@@ -170,13 +172,24 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
     @classmethod
     def from_task(cls, task: Task, default_script_args: typing.Sequence, refiner_checkpoint: str = None):
         base_model_path = task['base_model_path']
-        alwayson_scripts = task['alwayson_scripts']
+        alwayson_scripts = task.get('alwayson_scripts') or {}
         user_id = task['user_id']
         select_script = task.get('select_script')
         select_script_name, select_script_args = None, None
         prompt = task.get('prompt', '')
         negative_prompt = task.get('negative_prompt', '')
         lora_meta_array = task.get('lora_meta_array')
+        init_img = task.get('init_img')
+
+        if not lora_meta_array:
+            left_lora_meta = task.get('left_lora_meta')
+            if not left_lora_meta:
+                raise ValueError('cannot found left lora meta')
+
+            right_lora_meta = task.get('right_lora_meta')
+            if not right_lora_meta:
+                raise ValueError('cannot found right lora meta')
+            lora_meta_array = [left_lora_meta, right_lora_meta]
 
         if select_script:
             if not isinstance(select_script, dict):
@@ -204,7 +217,10 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
             kwargs.pop('select_script_args')
         if 'lora_meta_array' in kwargs:
             kwargs.pop('lora_meta_array')
-
+        if 'left_lora_meta' in kwargs:
+            kwargs.pop('left_lora_meta')
+        if 'right_lora_meta' in kwargs:
+            kwargs.pop('right_lora_meta')
         if "nsfw" in prompt.lower():
             prompt = prompt.lower().replace('nsfw', '')
         kwargs['refiner_checkpoint'] = refiner_checkpoint
@@ -213,6 +229,7 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
         return cls(base_model_path,
                    user_id,
                    lora_meta_array,
+                   init_img,
                    default_script_args,
                    prompt=prompt,
                    negative_prompt=negative_prompt,
