@@ -201,11 +201,14 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
             select_script_args = task.get('select_script_args')
 
         kwargs = task.data.copy()
-        kwargs.pop('base_model_path')
-        kwargs.pop('alwayson_scripts')
-        kwargs.pop('prompt')
-        kwargs.pop('negative_prompt')
         kwargs.pop('user_id')
+        kwargs.pop('base_model_path')
+        if 'alwayson_scripts' in kwargs:
+            kwargs.pop('alwayson_scripts')
+        if 'prompt' in kwargs:
+            kwargs.pop('prompt')
+        if 'negative_prompt' in kwargs:
+            kwargs.pop('negative_prompt')
         if 'lora_meta_array' in kwargs:
             kwargs.pop('lora_meta_array')
 
