@@ -211,7 +211,8 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
             kwargs.pop('negative_prompt')
         if 'lora_meta_array' in kwargs:
             kwargs.pop('lora_meta_array')
-
+        if 'init_img' in kwargs:
+            kwargs.pop('init_img')
         if 'select_script' in kwargs:
             kwargs.pop('select_script')
         if 'select_script_name' in kwargs:
