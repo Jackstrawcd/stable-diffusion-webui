@@ -24,6 +24,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 from modelscope.outputs import OutputKeys
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
+from insightface.app import FaceAnalysis
 
 
 class MultiGenDigitalPhotoLoraMeta:
@@ -365,31 +366,31 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
 
     def _get_face_mask(self, image, model_path):
 
-        # 加载人脸关键点检测器
-        face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
-        if not os.path.isfile(face_model):
-            import requests
-            print("download shape_predictor_68_face_landmarks.dat from xingzheassert.obs.cn-north-4.myhuaweicloud.com")
-            resp = requests.get(
-                'https://xingzheassert.obs.cn-north-4.myhuaweicloud.com/sd-web/resource/face/shape_predictor_68_face_landmarks.dat')
-            if resp:
-                dirname = os.path.dirname(face_model)
-                os.makedirs(dirname, exist_ok=True)
-                filepath = os.path.join("tmp", 'shape_predictor_68_face_landmarks.dat')
-                os.makedirs('tmp', exist_ok=True)
-                chunk_size = 1024
-
-                with open(filepath, 'wb') as f:
-                    for chunk in resp.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            f.write(chunk)
-
-                if os.path.isfile(filepath):
-                    shutil.move(filepath, face_model)
-
-        if not os.path.isfile(face_model):
-            raise OSError(f'cannot found model:{face_model}')
-        predictor = dlib.shape_predictor(face_model)
+        # # 加载人脸关键点检测器
+        # face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
+        # if not os.path.isfile(face_model):
+        #     import requests
+        #     print("download shape_predictor_68_face_landmarks.dat from xingzheassert.obs.cn-north-4.myhuaweicloud.com")
+        #     resp = requests.get(
+        #         'https://xingzheassert.obs.cn-north-4.myhuaweicloud.com/sd-web/resource/face/shape_predictor_68_face_landmarks.dat')
+        #     if resp:
+        #         dirname = os.path.dirname(face_model)
+        #         os.makedirs(dirname, exist_ok=True)
+        #         filepath = os.path.join("tmp", 'shape_predictor_68_face_landmarks.dat')
+        #         os.makedirs('tmp', exist_ok=True)
+        #         chunk_size = 1024
+        #
+        #         with open(filepath, 'wb') as f:
+        #             for chunk in resp.iter_content(chunk_size=chunk_size):
+        #                 if chunk:
+        #                     f.write(chunk)
+        #
+        #         if os.path.isfile(filepath):
+        #             shutil.move(filepath, face_model)
+        #
+        # if not os.path.isfile(face_model):
+        #     raise OSError(f'cannot found model:{face_model}')
+        # predictor = dlib.shape_predictor(face_model)
 
         image_tmp_local_path = get_tmp_local_path(image)
         image = Image.open(image_tmp_local_path)
@@ -399,12 +400,12 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
             print("底图有错误")
             return None
 
-        # 将图像转换为灰度图
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # 使用人脸检测器检测人脸
-        detector = dlib.get_frontal_face_detector()
-        faces = detector(gray)
+        # # 将图像转换为灰度图
+        # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        #
+        # # 使用人脸检测器检测人脸
+        # detector = dlib.get_frontal_face_detector()
+        # faces = detector(gray)
 
         # 创建一个与原始图像相同大小的掩膜
         mask = np.zeros_like(image)
@@ -417,16 +418,43 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
 
         white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
 
-        for face in faces:
-            # 检测人脸关键点
-            landmarks = predictor(gray, face)
+        # for face in faces:
+        #     # 检测人脸关键点
+        #     landmarks = predictor(gray, face)
+        #
+        #     # 提取人脸轮廓
+        #     points = []
+        #     for n in range(68):
+        #         x = landmarks.part(n).x
+        #         y = landmarks.part(n).y
+        #         points.append((x, y))
 
-            # 提取人脸轮廓
-            points = []
-            for n in range(68):
-                x = landmarks.part(n).x
-                y = landmarks.part(n).y
-                points.append((x, y))
+        models_dir = os.path.join(model_path, r'buffalo_l')
+        app = FaceAnalysis(name=models_dir, allowed_modules=['recognition', 'detection', 'landmark_3d_68'])
+        # app = FaceAnalysis(name=models_dir,allowed_modules=['detection', 'landmark_2d_106'])
+        app.prepare(ctx_id=0, det_size=(640, 640))
+        source_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        faces = app.get(source_img)
+        points = []
+
+        if len(faces) == 0:
+            print("识别不出人脸")
+        print("识别到的人脸数：", len(faces))
+        # 获取眼睛和嘴巴点位
+        for face in faces:
+            lmk = face.landmark_3d_68
+            lmk = np.round(lmk).astype(np.int)
+            for i in range(lmk.shape[0]):
+                # p = (lmk[i][0],lmk[i][1])
+                points.append(lmk[i][0])
+                points.append(lmk[i][1])
+
+        if len(points) % 2 != 0:
+            points = points[:-1]
+
+            # 将 points 划分成两两一组的元组列表
+        points = [(points[i], points[i + 1]) for i in range(0, len(points), 2)]
+
 
         # 计算所有点的最小和最大坐标值
         min_x = min(point[0] for point in points)
