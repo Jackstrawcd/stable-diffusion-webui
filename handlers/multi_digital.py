@@ -411,9 +411,9 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
 
         # 遍历检测到的人脸
         # print(len(faces))
-        if len(faces) != 2:
-            print(f"cannot detect face, result:{len(faces)}")
-            return None
+        # if len(faces) != 2:
+        #     print(f"cannot detect face, result:{len(faces)}")
+        #     return None
 
         white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
 
