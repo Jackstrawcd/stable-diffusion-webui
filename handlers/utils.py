@@ -22,6 +22,7 @@ from tools.wrapper import FuncExecTimeWrapper
 from urllib.parse import urlparse
 from modules.processing import Processed
 from modules.scripts import Script, ScriptRunner
+from tools.transformer import hook
 from tools.environment import S3Tmp, S3SDWEB, enable_download_locker
 from filestorage import FileStorageCls, get_local_path, batch_download
 from handlers.formatter import format_alwayson_script_args, format_select_script_args
@@ -358,6 +359,8 @@ def load_sd_model_weights(filename, sha256=None):
     if filename:
         os.popen(f'touch {filename}')
         checkpoint = CheckpointInfo(filename, sha256)
+        # 防止HF 的snapshot_download被MODELSCOPE给HOOK
+        hook()
         res = reload_model_weights(info=checkpoint)
         return res
 

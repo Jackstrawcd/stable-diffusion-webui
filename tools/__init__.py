@@ -9,6 +9,7 @@ import json
 import os.path
 import shutil
 import time
+from tools.transformer import hook
 
 
 def try_deserialize_json(json_str: str, default=None):
@@ -22,6 +23,7 @@ def try_deserialize_json(json_str: str, default=None):
 TempDir = "tmp"
 
 os.makedirs(TempDir, exist_ok=True)
+hook()
 
 
 def safety_clean_tmp(exp=3600*36):
