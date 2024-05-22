@@ -144,10 +144,12 @@ class MultiGenDigitalPhotoTask(Txt2ImgTask):
             raise ValueError('lora count error')
 
         self.init_img = init_img
+        self.loras = []
         for i, meta in enumerate(lora_meta_array):
             lora_key = meta['lora_key']
             images = meta['image_keys']
             self.lora_meta_map[i] = MultiGenDigitalPhotoLoraMeta(images, lora_key)
+            self.loras.append(lora_key)
 
     def get_train_image_local_dir(self):
         '''
@@ -795,6 +797,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         process_args1.do_not_save_grid = True
         processed = process_images(process_args1)
         gen_results = processed.images[0]
+        print(f"first prompt:{process_args1.prompt}")
 
         progress.task_progress = 20
         progress.calc_eta_relative(upload_files_eta_secs)
@@ -885,6 +888,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         process_args2.prompt = base_prompt + f",{lora_prompts[-1]}"
         processed = process_images(process_args2)
         gen_results = processed.images[0]
+        print(f"second prompt:{process_args2.prompt}")
 
         progress.task_progress = 65
         progress.calc_eta_relative(upload_files_eta_secs)
