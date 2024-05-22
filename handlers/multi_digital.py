@@ -721,6 +721,8 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         t['n_iter'] = 1
         t['batch_size'] = 1
 
+        face_swap = t.get('blend', True)
+
         process_args = MultiGenDigitalPhotoTask.from_task(t, self.default_script_args)
         lora_prompts = process_args.lora_prompts()
         # 加载底模
@@ -807,7 +809,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
             # select_high_quality_face PIL
             selected_face = self.select_high_quality_face(first_lora_train_dataset)
             # face_swap cv2
-            swap_results = self.face_swap_fn(True, [gen_results], selected_face)
+            swap_results = self.face_swap_fn(face_swap, [gen_results], selected_face)
             # stylization
             final_gen_results = swap_results
 
@@ -897,7 +899,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         if second_lora_train_dataset:
             selected_face = self.select_high_quality_face(second_lora_train_dataset)
             # face_swap cv2
-            swap_results = self.face_swap_fn(True, [gen_results], selected_face)
+            swap_results = self.face_swap_fn(face_swap, [gen_results], selected_face)
             # stylization
             final_gen_results = swap_results
         else:
