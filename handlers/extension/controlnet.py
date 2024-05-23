@@ -420,7 +420,7 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                 control_unit['model'] = strip_model_hash(control_unit['model'])
                 # if control_unit['model'] == 'None':
                 #     control_unit['model'] = 'none'
-                if control_unit['module'] == 'None':
+                if control_unit['module'] == 'None' or control_unit['module'] == '无':
                     control_unit['module'] = 'none'
                 if control_unit['module'] in FreePreprocessors:
                     control_unit['model'] = 'None'
