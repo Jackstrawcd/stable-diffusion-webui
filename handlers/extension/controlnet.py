@@ -376,17 +376,17 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                         'RGBA') if image else None
 
                     size = image.size if image else None
-                    image = np.array(image) if image else None
+                    image = np.array(image, dtype=np.uint8) if image else None
                     mask = item['image'].get('mask')
                     if not mask:
                         shape = list(size)
                         shape.append(4)  # rgba
-                        mask = np.zeros(shape)
+                        mask = np.zeros(shape, dtype=np.uint8)
                         mask[:, :, -1] = 255
                         # mask = None
                     elif isinstance(mask, str) and mask:
                         mask = get_tmp_local_path(item['image']['mask'])
-                        mask = np.array(Image.open(mask))
+                        mask = np.array(Image.open(mask), dtype=np.uint8)
 
                 control_unit = {
                     'enabled': item.get('enabled', False),
