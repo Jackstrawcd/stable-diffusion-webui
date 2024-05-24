@@ -289,7 +289,7 @@ def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
 
             json_acceptor = JsonAcceptor()
 
-            result, is_image = preprocessor.cached_call(
+            result = preprocessor.cached_call(
                 img,
                 resolution=args.pres,
                 slider_1=args.pthr_a,
@@ -300,7 +300,6 @@ def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
                 ),
                 model=args.model,
             )
-
 
             # if args.pres > 64:
             #     # 参数校验：超过范围就取最小值
@@ -320,29 +319,34 @@ def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
             # else:
             #     result, is_image = preprocessor(img)
 
-            if not is_image:
-                # 返回原图
-                result = img
-                is_image = True
-
-            # if "clip" in module:
-            #     result = clip_vision_visualization(result)
+            # if not is_image:
+            #     # 返回原图
+            #     result = img
             #     is_image = True
-            r, pli_img = None, None
-            if is_image:
-                if result.ndim == 3 and result.shape[2] == 4:
-                    inpaint_mask = result[:, :, 3]
-                    result = result[:, :, 0:3]
-                    result[inpaint_mask > 127] = 0
-                    pli_img = Image.fromarray(result, mode='RGB')
-                elif result.ndim == 2:
-                    pli_img = Image.fromarray(result, mode='L')
-                else:
-                    pli_img = Image.fromarray(result, mode='RGB')
+            #
+            # # if "clip" in module:
+            # #     result = clip_vision_visualization(result)
+            # #     is_image = True
+            # r, pli_img = None, None
+            im = result.display_images[0] if result.display_images else None
 
-            if pli_img:
+            if im is not None and im.any():
+                if im.ndim == 3 and im.shape[2] == 4:
+                    inpaint_mask = im[:, :, 3]
+                    im = im[:, :, 0:3]
+                    im[inpaint_mask > 127] = 0
+                    pli_img = Image.fromarray(im, mode='RGB')
+                elif im.ndim == 2:
+                    pli_img = Image.fromarray(im, mode='L')
+                else:
+                    pli_img = Image.fromarray(im, mode='RGB')
+            else:
+                pli_img = None
+            if pli_img is not None:
                 filename = task.id + '.png'
                 r = upload_pil_image(True, pli_img, name=filename)
+            else:
+                r = task['image']
 
             progress = TaskProgress.new_finish(task, {
                 'all': {
