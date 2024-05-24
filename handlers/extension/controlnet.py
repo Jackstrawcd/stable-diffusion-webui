@@ -123,8 +123,10 @@ class RunAnnotatorArgs:
                  t2i_h: int = 1520,
                  pp: bool = False,
                  rm: str = 'Resize and Fill',
+                 model: str = 'None',
                  **kwargs):
         image = get_tmp_local_path(image)
+        self.model = strip_model_hash(model)
         self.image = np.array(Image.open(image).convert('RGB'))
         if not mask:
             shape = list(self.image.shape)
@@ -267,8 +269,13 @@ def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
             #         module = 'none'
             #
             #     return global_state.reverse_preprocessor_aliases.get(module, module)
+            if hasattr(control_net_script, 'find_preprocessor'):
+                preprocessor = control_net_script.find_preprocessor(args.module)
+            elif hasattr(control_net_script, 'preprocessor'):
+                preprocessor = control_net_script.preprocessor[args.module]
+            else:
+                raise ValueError('cannot find preprocessor')
 
-            preprocessor = control_net_script.preprocessor[args.module]
             if args.pp:
                 args.pres = pixel_perfect_resolution(
                     img,
@@ -281,23 +288,37 @@ def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
                 return "openpose" in module
 
             json_acceptor = JsonAcceptor()
-            if args.pres > 64:
-                # 参数校验：超过范围就取最小值
-                args.pthr_a, args.pthr_b = run_annotato_args_check(
-                    args.module, args.pthr_a, args.pthr_b)
-                # result, is_image = preprocessor(
-                #     img, res=args.pres, thr_a=args.pthr_a, thr_b=args.pthr_b)
-                result, is_image = preprocessor(
-                    img,
-                    res=args.pres,
-                    thr_a=args.pthr_a,
-                    thr_b=args.pthr_b,
-                    json_pose_callback=json_acceptor.accept
-                    if is_openpose(module)
-                    else None,
-                )
-            else:
-                result, is_image = preprocessor(img)
+
+            result, is_image = preprocessor.cached_call(
+                img,
+                resolution=args.pres,
+                slider_1=args.pthr_a,
+                slider_2=args.pthr_b,
+                low_vram=False,
+                json_pose_callback=(
+                    json_acceptor.accept if is_openpose(module) else None
+                ),
+                model=args.model,
+            )
+
+
+            # if args.pres > 64:
+            #     # 参数校验：超过范围就取最小值
+            #     args.pthr_a, args.pthr_b = run_annotato_args_check(
+            #         args.module, args.pthr_a, args.pthr_b)
+            #     # result, is_image = preprocessor(
+            #     #     img, res=args.pres, thr_a=args.pthr_a, thr_b=args.pthr_b)
+            #     result, is_image = preprocessor(
+            #         img,
+            #         res=args.pres,
+            #         thr_a=args.pthr_a,
+            #         thr_b=args.pthr_b,
+            #         json_pose_callback=json_acceptor.accept
+            #         if is_openpose(module)
+            #         else None,
+            #     )
+            # else:
+            #     result, is_image = preprocessor(img)
 
             if not is_image:
                 # 返回原图
