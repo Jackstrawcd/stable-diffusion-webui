@@ -374,15 +374,18 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                         item['image']['image']) if item['image']['image'] else None
                     image = Image.open(image).convert(
                         'RGBA') if image else None
-
-                    size = image.size if image else None
+                    mode = image.mode
+                    alpha_data = image.getchannel("A").convert("L")
                     image = np.array(image, dtype=np.uint8) if image else None
                     mask = item['image'].get('mask')
                     if not mask:
-                        shape = list(size)
-                        shape.append(4)  # rgba
-                        mask = np.zeros(shape, dtype=np.uint8)
-                        mask[:, :, -1] = 255
+                        shape = image.shape
+                        if mode == "RGBA":  # whiten any opaque pixels in the mask
+                            mask_im = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
+                            mask = np.array(mask_im, dtype=np.uint8)
+                        else:
+                            mask = np.zeros(shape, dtype=np.uint8)
+                            mask[:, :, -1] = 255
                         # mask = None
                     elif isinstance(mask, str) and mask:
                         mask = get_tmp_local_path(item['image']['mask'])
