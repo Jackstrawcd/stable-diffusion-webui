@@ -397,15 +397,17 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
 
                     image = get_tmp_local_path(
                         item['image']['image']) if item['image']['image'] else None
-                    image = Image.open(image).convert(
-                        'RGBA') if image else None
+                    image = Image.open(image) if image else None
                     mode = image.mode
-                    alpha_data = image.getchannel("A").convert("L")
+                    if not image:
+                        raise ValueError('cannot found controlnet image')
+                    # image = image.convert('RGBA')
                     image = np.array(image, dtype=np.uint8) if image else None
                     mask = item['image'].get('mask')
                     if not mask:
                         shape = image.shape
                         if mode == "RGBA":  # whiten any opaque pixels in the mask
+                            alpha_data = image.getchannel("A").convert("L")
                             mask_im = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
                             mask = np.array(mask_im, dtype=np.uint8)
                         else:
@@ -452,7 +454,8 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                     control_unit['module'] = 'none'
                 if control_unit['module'] in FreePreprocessors:
                     control_unit['model'] = 'None'
-
+                if "clip" in control_unit['module'] or control_unit['module'] == "ip-adapter_face_id_plus":
+                    control_unit['low_vram'] = True
                 new_args.append(control_unit)
 
             if isinstance(control_net_script_args, Iterable):
