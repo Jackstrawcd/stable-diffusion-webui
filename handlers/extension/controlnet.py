@@ -404,21 +404,28 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                     if not image:
                         raise ValueError('cannot found controlnet image')
                     # image = image.convert('RGBA')
-                    image_np = np.array(image, dtype=np.uint8) if image else None
+                    image_np = np.array(image.convert('RGB'), dtype=np.uint8) if image else None
                     mask = item['image'].get('mask')
                     if not mask:
                         shape = image_np.shape
-                        if mode == "RGBA":  # whiten any opaque pixels in the mask
-                            alpha_data = image.getchannel("A").convert("L")
-                            mask_im = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
-                            mask = np.array(mask_im, dtype=np.uint8)
-                        else:
-                            mask = np.zeros(shape, dtype=np.uint8)
-                            mask[:, :, -1] = 255
+                        mask = np.zeros(shape, dtype=np.uint8)
+                        # if mode == "RGBA":  # whiten any opaque pixels in the mask
+                        #     alpha_data = image.getchannel("A").convert("L")
+                        #     mask_im = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
+                        #     mask = np.array(mask_im, dtype=np.uint8)
+                        # else:
+                        #     mask = np.zeros(shape, dtype=np.uint8)
+                        #     mask[:, :, -1] = 255
                         # mask = None
                     elif isinstance(mask, str) and mask:
                         mask = get_tmp_local_path(item['image']['mask'])
-                        mask = np.array(Image.open(mask), dtype=np.uint8)
+                        mask_im = Image.open(mask)
+                        if mask_im.mode == 'RGBA':
+                            alpha_data = mask_im.getchannel("A").convert("L")
+                            mask_al = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
+                            mask = np.array(mask_al, dtype=np.uint8)
+                        else:
+                            mask = np.array(mask_im, dtype=np.uint8)
 
                 control_unit = {
                     'enabled': item.get('enabled', False),
