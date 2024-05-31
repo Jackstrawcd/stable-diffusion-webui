@@ -393,6 +393,8 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
 
             def set_default(item):
                 image, mask = None, None
+                image_np = None
+
                 if item.get('enabled', False):
 
                     image = get_tmp_local_path(
@@ -402,10 +404,10 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                     if not image:
                         raise ValueError('cannot found controlnet image')
                     # image = image.convert('RGBA')
-                    image = np.array(image, dtype=np.uint8) if image else None
+                    image_np = np.array(image, dtype=np.uint8) if image else None
                     mask = item['image'].get('mask')
                     if not mask:
-                        shape = image.shape
+                        shape = image_np.shape
                         if mode == "RGBA":  # whiten any opaque pixels in the mask
                             alpha_data = image.getchannel("A").convert("L")
                             mask_im = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
@@ -424,7 +426,7 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                     'guidance_start': item.get('guidance_start', 0) or 0,
                     'guidance_end': item.get('guidance_end', 1) or 1,
                     'image': {
-                        'image': image,
+                        'image': image_np,
                         'mask': mask,
                     },
                     # 'invert_image': item.get('invert_image', False),
