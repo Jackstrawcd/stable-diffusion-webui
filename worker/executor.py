@@ -71,9 +71,6 @@ class TaskExecutor(Thread):
         logger.error(f'exec task failed: {task.desc()}, ex: {ex}')
 
     def nofity(self):
-        if getattr(self.not_busy, "value", 0) == 0:
-            return
-
         with self.not_busy:
             self.not_busy.notify_all()
             logger.debug("notify receiver ")
@@ -123,6 +120,7 @@ class TaskExecutor(Thread):
                 if random.randint(1, 10) < 3:
                     logger.info('task queue is empty...')
                     torch_gc()
+                    self.nofity()
                 if not self.is_alive():
                     logger.info('task receiver dead')
                     free, total = vram_mon.cuda_mem_get_info()
@@ -186,7 +184,7 @@ class TaskExecutor(Thread):
                                 logger.debug(f"====>>> waiting task:{task.id}, stop receive.")
                                 setattr(self.not_busy, "value", 1)
                                 try:
-                                    timeout = 3600 * 16
+                                    timeout = 3600 * 1
                                     self.not_busy.wait(timeout=timeout)
                                     logger.info(f"====>>> acquire locker, time out:{timeout} seconds")
                                 except Exception as err:
@@ -203,7 +201,8 @@ class TaskExecutor(Thread):
                         self.__stop = True
                         system_exit(0, 0, True)
                 else:
-                    self.not_busy.wait()
+                    setattr(self.not_busy, "value", 2)
+                    self.not_busy.wait(60)
         logger.info("=======> task receiver quit!!!!!!")
         self.__stop = True
 
