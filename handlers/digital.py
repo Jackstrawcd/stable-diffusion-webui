@@ -30,6 +30,7 @@ from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
 from loguru import logger
 from tools.wrapper import FuncExecTimeWrapper
 from collections import defaultdict
+from insightface.app import FaceAnalysis
 
 
 class DigitalTaskType(IntEnum):
@@ -250,7 +251,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         # 遍历检测到的人脸
         # print(len(faces))
         if len(faces) != 1:
-            print(f"cannot detect face:{f}, result:{len(faces)}")
+            print(f"cannot detect face:{image}, result:{len(faces)}")
             return None
 
         white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
@@ -281,13 +282,69 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
         return result
 
+    def _get_face_mask_v2(self, image, model_path):
+        image_key = image
+        image_tmp_local_path = get_tmp_local_path(image_key)
+        image = Image.open(image_tmp_local_path)
+        image = np.array(image.convert("RGB"))
+
+        if not isinstance(image, (Image.Image, np.ndarray)):
+            print("底图有错误")
+            raise ValueError(f'image error:{image_key}')
+
+        mask = np.zeros_like(image)
+
+        white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
+
+        models_dir = os.path.join(model_path, r'buffalo_l')
+        app = FaceAnalysis(name=models_dir, allowed_modules=['recognition', 'detection', 'landmark_3d_68'])
+        # app = FaceAnalysis(name=models_dir,allowed_modules=['detection', 'landmark_2d_106'])
+        app.prepare(ctx_id=0, det_size=(640, 640))
+        source_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        faces = app.get(source_img)
+        points = []
+
+        if len(faces) == 0:
+            print("识别不出人脸")
+            raise ValueError(f'cannot detect face:{image_key}')
+        print("识别到的人脸数：", len(faces))
+        # 获取眼睛和嘴巴点位
+        for face in faces:
+            lmk = face.landmark_3d_68
+            lmk = np.round(lmk).astype(np.int)
+            for i in range(lmk.shape[0]):
+                # p = (lmk[i][0],lmk[i][1])
+                points.append(lmk[i][0])
+                points.append(lmk[i][1])
+
+        if len(points) % 2 != 0:
+            points = points[:-1]
+
+            # 将 points 划分成两两一组的元组列表
+        points = [(points[i], points[i + 1]) for i in range(0, len(points), 2)]
+
+        # 计算所有点的最小和最大坐标值
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        # 将矩形区域设置为黑色
+
+        cv2.rectangle(mask, (min_x, min_y), (max_x, max_y), (255, 255, 255), -1)
+
+        # 将蒙版应用到原始图像上
+        # 将mask应用于原始图像
+        result = cv2.bitwise_and(white_background, mask)
+
+        return result
+
     @FuncExecTimeWrapper()
     def _get_image_masks(self, init_images: typing.Sequence[str]):
 
         def gen_image_mask(init_image: str):
             face_model_path = os.path.join(os.getcwd(), "models")
 
-            init_img_mask = self._get_face_mask(init_image, face_model_path)
+            init_img_mask = self._get_face_mask_v2(init_image, face_model_path)
             init_img_mask_image = Image.fromarray(init_img_mask)
             dirname = mk_tmp_dir("digital_mask")
             init_img_mask_path = os.path.join(dirname, uuid.uuid4().hex + ".png")
