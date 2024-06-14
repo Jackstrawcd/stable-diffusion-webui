@@ -8,6 +8,7 @@
 import os.path
 import queue
 import random
+import threading
 import time
 import typing
 from queue import Queue
@@ -71,6 +72,8 @@ class TaskExecutor(Thread):
         logger.error(f'exec task failed: {task.desc()}, ex: {ex}')
 
     def nofity(self):
+        if getattr(self.not_busy, "value", 0) == 0:
+            return
         with self.not_busy:
             self.not_busy.notify_all()
             logger.debug("notify receiver ")
@@ -94,7 +97,7 @@ class TaskExecutor(Thread):
         logger.info(f"executor start with:{','.join(handlers)}")
         while not self.__stop:
             try:
-                logger.info(f"====>>> start receive and execute task")
+                logger.info(f"====>>> start receive and execute task, thread:{threading.current_thread().name}")
                 task = self.queue.get(timeout=10)
                 if not task:
                     continue
@@ -177,7 +180,7 @@ class TaskExecutor(Thread):
                                 safety_clean_tmp()
                                 model_hashes = self._get_persist_model_hashes()
                                 tidy_model_caches(models_path, persist_model_hashes=model_hashes)
-                            logger.info(f"====>>> preload task:{task.id}")
+                            logger.info(f"====>>> preload task:{task.id} thread:{threading.current_thread().name}")
                             self.queue.put(task)
                             logger.info(f"====>>> push task:{task.id}")
                             if isinstance(task, Task):
