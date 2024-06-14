@@ -146,6 +146,8 @@ class TaskHandler:
                     system_exit(free, total, coercive=True)
                 if 'BrokenPipeError' in str(ex):
                     pass
+            else:
+                logger.info(f"handle task finished:{task.id}")
 
     def register(self, *args: RegisterMinorHandlerArgType):
         for item in args:

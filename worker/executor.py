@@ -115,7 +115,7 @@ class TaskExecutor(Thread):
 
                 self.current_task = TaskProgress.new_ready(task, "reading")
                 handler(task, progress_callback=self.task_progress)
-
+                logger.info(f"====>>> exec task finish:{task.id}, stop status:{self.__stop}")
             except queue.Empty:
                 if random.randint(1, 10) < 3:
                     logger.info('task queue is empty...')
