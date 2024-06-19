@@ -630,7 +630,9 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
             if image:
                 if image in controlnet_refer_is_gray_img_result:
                     return controlnet_refer_is_gray_img_result[image]
-                controlnet_refer_is_gray_img_result[image] = is_gray_image(image)
+                r = is_gray_image(image)
+                controlnet_refer_is_gray_img_result[image] = r
+                return r
 
         for i, p in enumerate(processes):
             if i == 0:
