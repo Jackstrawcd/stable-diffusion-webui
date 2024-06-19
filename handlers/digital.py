@@ -604,7 +604,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         yield progress
 
         merge_task = True
-        process, tasks = self._build_t2i_tasks(task, merge_task)
+        processes, tasks = self._build_t2i_tasks(task, merge_task)
         # i2i
         images = []
         all_seeds = []
@@ -632,7 +632,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                     return controlnet_refer_is_gray_img_result[image]
                 controlnet_refer_is_gray_img_result[image] = is_gray_image(image)
 
-        for i, p in enumerate(process):
+        for i, p in enumerate(processes):
             if i == 0:
                 self._set_little_models(p)
             print(f"> process task n_iter:{p.n_iter}")
@@ -672,6 +672,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 process_images_array.extend(processed.images[:processed.index_of_end_image + 1])
 
             if is_gray_init_image:
+                logger.info("gray init image, convert ... ")
                 for i, img in enumerate(process_images_array):
                     process_images_array[i] = img.convert('L')
 
@@ -694,9 +695,9 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         yield progress
 
         images = save_processed_images(processed,
-                                       tasks[0].outpath_samples,
-                                       tasks[0].outpath_grids,
-                                       tasks[0].outpath_scripts,
+                                       processes[0].outpath_samples,
+                                       processes[0].outpath_grids,
+                                       processes[0].outpath_scripts,
                                        task.id,
                                        inspect=False,
                                        forbidden_review=True)
