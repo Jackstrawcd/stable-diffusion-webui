@@ -25,9 +25,10 @@ from handlers.img2img import Img2ImgTask, Img2ImgTaskHandler
 from worker.task import TaskType, TaskProgress, Task, TaskStatus
 from modules.processing import StableDiffusionProcessingImg2Img, process_images, Processed, fix_seed
 from handlers.utils import init_script_args, get_selectable_script, init_default_script_args, \
-    load_sd_model_weights, save_processed_images, ADetailer, mk_tmp_dir
+    load_sd_model_weights, save_processed_images, ADetailer, mk_tmp_dir, ControlNet
 from handlers.utils import get_tmp_local_path, upload_files, upload_pil_image
 from loguru import logger
+from tools.image import is_gray_image
 from tools.wrapper import FuncExecTimeWrapper
 from collections import defaultdict
 from insightface.app import FaceAnalysis
@@ -365,6 +366,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
 
     def _build_t2i_tasks(self, t: Task, merge_task: bool = False):
         tasks = []
+        processes = []
         base_prompt = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition," \
                       "Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable," \
                       "HDR,16K,details,The most authentic,Glossy solid color,"
@@ -416,7 +418,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                         },
                     ]
                 },
-                "ControlNet": {
+                ControlNet: {
                     "args": [
                         {
                             "control_mode": "ControlNet is more important",
@@ -522,9 +524,10 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 # img.close()
 
                 t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
-                tasks.append(Txt2ImgTask.from_task(t, self.default_script_args))
+                processes.append(Txt2ImgTask.from_task(t, self.default_script_args))
+                tasks.append(t)
 
-        return tasks
+        return processes, tasks
 
     # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
     #     if task.minor_type == DigitalTaskType.Img2Img:
@@ -601,7 +604,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         yield progress
 
         merge_task = True
-        tasks = self._build_t2i_tasks(task, merge_task)
+        process, tasks = self._build_t2i_tasks(task, merge_task)
         # i2i
         images = []
         all_seeds = []
@@ -612,7 +615,24 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         start_time = time.time()
         logger.info(f"preprocess digtal t2i cost:{time.time() - time_start}s")
         shared.state.begin()
-        for i, p in enumerate(tasks):
+
+        def extract_controlnet_refer_image(alwayson_scripts: dict):
+            controlnet_units = alwayson_scripts.get(ControlNet) or {}
+            controlnet_args = controlnet_units.get("args") or []
+            for args in controlnet_args:
+                if 'inpaint_only' in args['module']:
+                    return args["image"]["image"]
+
+        controlnet_refer_is_gray_img_result = {}
+
+        def controlnet_refer_is_gray_img(alwayson_scripts: dict):
+            image = extract_controlnet_refer_image(alwayson_scripts)
+            if image:
+                if image in controlnet_refer_is_gray_img_result:
+                    return controlnet_refer_is_gray_img_result[image]
+                controlnet_refer_is_gray_img_result[image] = is_gray_image(image)
+
+        for i, p in enumerate(process):
             if i == 0:
                 self._set_little_models(p)
             print(f"> process task n_iter:{p.n_iter}")
@@ -637,24 +657,25 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                         progress.calc_eta_relative(upload_files_eta_secs)
                     self._set_task_status(progress)
 
+            is_gray_init_image = controlnet_refer_is_gray_img(tasks[i]['alwayson_scripts'])
             shared.state.current_latent_changed_callback = update_progress
             p.do_not_save_grid = True
             processed = process_images(p)
             all_seeds.extend(processed.all_seeds)
             all_subseeds.extend(processed.all_subseeds)
-            if not merge_task:
-                images.append(processed.images[0])
-            else:
-                images.extend(processed.images[:processed.index_of_end_image + 1])
 
-            # time_since_start = time.time() - time_start
-            # eta = (time_since_start / p)
-            # progress.eta_relative = int(eta - time_since_start) + upload_files_eta_secs
-            # if i == 0:
-            #     progress.eta_relative = 90
-            # else:
-            #     progress.calc_eta_relative(upload_files_eta_secs)
-            # yield progress
+            process_images_array = []
+
+            if not merge_task:
+                process_images_array.append(processed.images[0])
+            else:
+                process_images_array.extend(processed.images[:processed.index_of_end_image + 1])
+
+            if is_gray_init_image:
+                for i, img in enumerate(process_images_array):
+                    process_images_array[i] = img.convert('L')
+
+            images.extend(process_images_array)
             p.close()
         shared.state.end()
         logger.info(f"inference digtal t2i cost:{time.time() - start_time}s")

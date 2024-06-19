@@ -221,6 +221,7 @@ def script_name_to_index(name, scripts):
 
 
 ADetailer = 'ADetailer'
+ControlNet = 'ControlNet'
 default_alwayson_scripts = {
     ADetailer: {
         'args': [{
@@ -386,7 +387,8 @@ def save_processed_images(proc: Processed,
                           clean_upload_files: bool = True,
                           inspect: bool = False,
                           detect_multi_face: bool = False,
-                          forbidden_review: bool = False):
+                          forbidden_review: bool = False,
+                          gray_img: bool = False):
     if not output_dir:
         raise ValueError('output is empty')
 
@@ -426,6 +428,10 @@ def save_processed_images(proc: Processed,
 
         if processed_image.mode == 'RGBA':
             processed_image = processed_image.convert("RGB")
+
+        if gray_img:
+            processed_image = processed_image.convert("L")
+
         full_path = os.path.join(out_obj.output_dir, filename)
 
         pnginfo_data = PngInfo()
