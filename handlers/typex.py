@@ -231,6 +231,8 @@ class ImageOutput:
                             msg += ", compress image fail"
                         # raise OSError(msg)
                         logger.warning(msg)
+                        if low_number < high_number:
+                            low_keys = high_keys
 
                 return ImageKeys(high_keys, low_keys)
 
