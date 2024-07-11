@@ -59,8 +59,25 @@ Env_DtAppKey = "DT_APPKEY"
 Env_DownloadLocker = "DOWNLOAD_LOCKER"
 # 维护模式key
 Env_Maintain = "MAINTAIN"
+# 单机多POD模型下共享文件路径
+# POD内相对路径
+Env_ShareDir = "SHARE_DIR"
+# 绝对路径
+# Env_AbsShareDir = "ABS_SHARE_DIR"
 
 cache = {}
+
+
+def get_value_from_env(k, defalut=None):
+    if k not in cache:
+        cache[k] = os.getenv(k) or defalut
+    return cache[k]
+
+
+def get_share_dir():
+    share_dir = get_value_from_env(Env_ShareDir)
+    # abs_share_dir = get_value_from_env(Env_AbsShareDir)
+    return share_dir
 
 
 def enable_download_locker():
@@ -206,9 +223,11 @@ def set_pod_status_env(status):
     os.environ["POD_STATUS"] = status
     return
 
+
 def get_wait_task_env():
     return os.getenv("WAIT_TASK", None)
 
+
 def set_wait_task_env(task_id):
     os.environ["WAIT_TASK"] = task_id
-    return
+

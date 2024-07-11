@@ -224,8 +224,13 @@ class ImageOutput:
                         if ex != ".gif":
                             low_number = 1 + low_number
                     if low_number != high_number:
-                        logger.error(f'low_keys:{low_keys},high_keys:{high_keys}')
-                        raise OSError(f"upload image failed,low_number != high_number,low_number:{low_number},high_number:{high_number}")
+                        # logger.error(f'low_keys:{low_keys},high_keys:{high_keys}')
+                        msg = f"[warning] upload image failed,low_number != high_number," \
+                              f"low_number:{low_number}, high_number:{high_number}"
+                        if len(self.local_files) != len(low_files):
+                            msg += ", compress image fail"
+                        # raise OSError(msg)
+                        logger.warning(msg)
 
                 return ImageKeys(high_keys, low_keys)
 
