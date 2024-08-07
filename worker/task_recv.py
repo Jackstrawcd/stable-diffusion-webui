@@ -583,6 +583,8 @@ class TaskReceiver:
                     yield task
                 else:
                     self.recorder.set_state(TaskReceiverState.Idle)
+                    if random.randint(0, 10) == 1:
+                        logger.info('receiver idle...')
 
                 wait = sleep_time - time.time() + st
                 if wait > 0:

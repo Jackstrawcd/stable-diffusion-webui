@@ -64,6 +64,8 @@ Env_Maintain = "MAINTAIN"
 Env_ShareDir = "SHARE_DIR"
 # 绝对路径
 # Env_AbsShareDir = "ABS_SHARE_DIR"
+# 接收器模式：0-多线程 1-单线程，默认0
+Env_RecvMode = "RECEIVER_MODE"
 
 cache = {}
 
@@ -72,6 +74,10 @@ def get_value_from_env(k, defalut=None):
     if k not in cache:
         cache[k] = os.getenv(k) or defalut
     return cache[k]
+
+
+def get_recv_mode():
+    return get_value_from_env(Env_RecvMode, 0)
 
 
 def get_share_dir():

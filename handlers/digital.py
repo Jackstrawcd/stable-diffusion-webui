@@ -370,9 +370,11 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         base_prompt = "solo,(((best quality))),(((ultra detailed))),(((masterpiece))),Ultra High Definition," \
                       "Maximum Detail Display,Hyperdetail,Clear details,Amazing quality,Super details,Unbelievable," \
                       "HDR,16K,details,The most authentic,Glossy solid color,"
-        terms = (x.strip() for x in str(t['prompt']).split(','))
-        lora_prompt = [x for x in terms if x.startswith('<lora:')]
-        t['prompt'] = base_prompt + ','.join(lora_prompt)
+        prompt = str(t['prompt'])
+        # terms = (x.strip() for x in prompt.split(','))
+        # lora_prompt = [x for x in terms if x.startswith('<lora:')]
+        # t['prompt'] = base_prompt + ','.join(lora_prompt)
+        t['prompt'] = base_prompt + prompt
         t['negative_prompt'] = "nsfw, paintings, sketches, (worst quality:2), (low quality:2), lowers, " \
                                "normal quality, ((monochrome)), ((grayscale)), logo, word, character, lowres," \
                                "bad anatomy, bad hands, text,error, missing fngers,extra digt ,fewer digits,cropped," \
