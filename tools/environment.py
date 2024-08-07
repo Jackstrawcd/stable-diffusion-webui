@@ -83,11 +83,7 @@ def get_recv_mode():
 def get_share_dir():
     share_dir = get_value_from_env(Env_ShareDir)
     # abs_share_dir = get_value_from_env(Env_AbsShareDir)
-    if not share_dir:
-        share_dir = 'tmp'
-        if not os.path.isdir(share_dir):
-            os.makedirs(share_dir, exist_ok=True)
-    
+
     return share_dir
 
 

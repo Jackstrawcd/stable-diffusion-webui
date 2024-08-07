@@ -16,13 +16,14 @@ class LocalFileStorage(FileStorage):
     def __init__(self):
         super(LocalFileStorage, self).__init__()
         self.share_dir = get_share_dir()
-        if not self.share_dir or not os.path.isdir(self.share_dir):
-            raise OSError(f'cannot found share directory:{self.share_dir}')
+        self.enable = self.share_dir and os.path.isdir(self.share_dir)
 
     def name(self):
         return "local"
 
     def download(self, remoting_path, local_path, progress_callback=None) -> str:
+        if not self.enable:
+            raise OSError('local fs disabled')
         dirname = os.path.dirname(remoting_path)
         if dirname != self.share_dir:
             remoting_path = os.path.join(self.share_dir, os.path.basename(remoting_path))
@@ -36,3 +37,5 @@ class LocalFileStorage(FileStorage):
         shutil.copy(local_path, remoting_path)
         return remoting_path
 
+    def lock_download(self, remoting_path, local_path, progress_callback=None, expire=1800, flocker=True) -> str:
+        return self.download(remoting_path, local_path, progress_callback)
