@@ -70,9 +70,9 @@ Env_RecvMode = "RECEIVER_MODE"
 cache = {}
 
 
-def get_value_from_env(k, defalut=None):
+def get_value_from_env(k, default=None):
     if k not in cache:
-        cache[k] = os.getenv(k) or defalut
+        cache[k] = os.getenv(k) or default
     return cache[k]
 
 
@@ -83,6 +83,11 @@ def get_recv_mode():
 def get_share_dir():
     share_dir = get_value_from_env(Env_ShareDir)
     # abs_share_dir = get_value_from_env(Env_AbsShareDir)
+    if not share_dir:
+        share_dir = 'tmp'
+        if not os.path.isdir(share_dir):
+            os.makedirs(share_dir, exist_ok=True)
+    
     return share_dir
 
 

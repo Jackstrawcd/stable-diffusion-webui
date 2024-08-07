@@ -16,7 +16,7 @@ class LocalFileStorage(FileStorage):
     def __init__(self):
         super(LocalFileStorage, self).__init__()
         self.share_dir = get_share_dir()
-        if not self.share_dir or not os.path.isfile(self.share_dir):
+        if not self.share_dir or not os.path.isdir(self.share_dir):
             raise OSError(f'cannot found share directory:{self.share_dir}')
 
     def name(self):
