@@ -39,3 +39,6 @@ class LocalFileStorage(FileStorage):
 
     def lock_download(self, remoting_path, local_path, progress_callback=None, expire=1800, flocker=True) -> str:
         return self.download(remoting_path, local_path, progress_callback)
+
+    def preview_url(self, remoting_path: str) -> str:
+        return remoting_path

@@ -24,6 +24,7 @@ def find_storage_classes_with_env(remoting=None):
 
     share_dir = get_share_dir()
     if share_dir and os.path.isdir(share_dir):
+        logger.info(f"local fs, share dir:{share_dir}")
         endpoint = LocalName
     else:
         endpoint = os.getenv(Env_EndponitKey)
