@@ -29,6 +29,7 @@ onUiLoaded(async() => {
     });
 
     function getActiveTab(elements, all = false) {
+        if (!elements.img2imgTabs) return null;
         const tabs = elements.img2imgTabs.querySelectorAll("button");
 
         if (all) return tabs;
@@ -43,6 +44,7 @@ onUiLoaded(async() => {
     // Get tab ID
     function getTabId(elements) {
         const activeTab = getActiveTab(elements);
+        if (!activeTab) return null;
         return tabNameToElementId[activeTab.innerText];
     }
 
@@ -218,6 +220,8 @@ onUiLoaded(async() => {
         canvas_hotkey_fullscreen: "KeyS",
         canvas_hotkey_move: "KeyF",
         canvas_hotkey_overlap: "KeyO",
+        canvas_hotkey_shrink_brush: "KeyQ",
+        canvas_hotkey_grow_brush: "KeyW",
         canvas_disabled_functions: [],
         canvas_show_tooltip: true,
         canvas_auto_expand: true,
@@ -227,6 +231,8 @@ onUiLoaded(async() => {
     const functionMap = {
         "Zoom": "canvas_hotkey_zoom",
         "Adjust brush size": "canvas_hotkey_adjust",
+        "Hotkey shrink brush": "canvas_hotkey_shrink_brush",
+        "Hotkey enlarge brush": "canvas_hotkey_grow_brush",
         "Moving canvas": "canvas_hotkey_move",
         "Fullscreen": "canvas_hotkey_fullscreen",
         "Reset Zoom": "canvas_hotkey_reset",
@@ -248,6 +254,7 @@ onUiLoaded(async() => {
     let isMoving = false;
     let mouseX, mouseY;
     let activeElement;
+    let interactedWithAltKey = false;
 
     const elements = Object.fromEntries(
         Object.keys(elementIDs).map(id => [
@@ -273,7 +280,7 @@ onUiLoaded(async() => {
         const targetElement = gradioApp().querySelector(elemId);
 
         if (!targetElement) {
-            console.log("Element not found");
+            console.log("Element not found", elemId);
             return;
         }
 
@@ -288,7 +295,7 @@ onUiLoaded(async() => {
 
         // Create tooltip
         function createTooltip() {
-            const toolTipElemnt =
+            const toolTipElement =
                 targetElement.querySelector(".image-container");
             const tooltip = document.createElement("div");
             tooltip.className = "canvas-tooltip";
@@ -351,7 +358,7 @@ onUiLoaded(async() => {
             tooltip.appendChild(tooltipContent);
 
             // Add a hint element to the target element
-            toolTipElemnt.appendChild(tooltip);
+            toolTipElement.appendChild(tooltip);
         }
 
         //Show tool tip if setting enable
@@ -361,9 +368,9 @@ onUiLoaded(async() => {
 
         // In the course of research, it was found that the tag img is very harmful when zooming and creates white canvases. This hack allows you to almost never think about this problem, it has no effect on webui.
         function fixCanvas() {
-            const activeTab = getActiveTab(elements).textContent.trim();
+            const activeTab = getActiveTab(elements)?.textContent.trim();
 
-            if (activeTab !== "img2img") {
+            if (activeTab && activeTab !== "img2img") {
                 const img = targetElement.querySelector(`${elemId} img`);
 
                 if (img && img.style.display !== "none") {
@@ -503,6 +510,10 @@ onUiLoaded(async() => {
         function changeZoomLevel(operation, e) {
             if (isModifierKey(e, hotkeysConfig.canvas_hotkey_zoom)) {
                 e.preventDefault();
+
+                if (hotkeysConfig.canvas_hotkey_zoom === "Alt") {
+                    interactedWithAltKey = true;
+                }
 
                 let zoomPosX, zoomPosY;
                 let delta = 0.2;
@@ -686,7 +697,9 @@ onUiLoaded(async() => {
             const hotkeyActions = {
                 [hotkeysConfig.canvas_hotkey_reset]: resetZoom,
                 [hotkeysConfig.canvas_hotkey_overlap]: toggleOverlap,
-                [hotkeysConfig.canvas_hotkey_fullscreen]: fitToScreen
+                [hotkeysConfig.canvas_hotkey_fullscreen]: fitToScreen,
+                [hotkeysConfig.canvas_hotkey_shrink_brush]: () => adjustBrushSize(elemId, 10),
+                [hotkeysConfig.canvas_hotkey_grow_brush]: () => adjustBrushSize(elemId, -10)
             };
 
             const action = hotkeyActions[event.code];
@@ -777,22 +790,28 @@ onUiLoaded(async() => {
         targetElement.addEventListener("mouseleave", handleMouseLeave);
 
         // Reset zoom when click on another tab
-        elements.img2imgTabs.addEventListener("click", resetZoom);
-        elements.img2imgTabs.addEventListener("click", () => {
-            // targetElement.style.width = "";
-            if (parseInt(targetElement.style.width) > 865) {
-                setTimeout(fitToElement, 0);
-            }
-        });
+        if (elements.img2imgTabs) {
+            elements.img2imgTabs.addEventListener("click", resetZoom);
+            elements.img2imgTabs.addEventListener("click", () => {
+                // targetElement.style.width = "";
+                if (parseInt(targetElement.style.width) > 865) {
+                    setTimeout(fitToElement, 0);
+                }
+            });
+        }
 
         targetElement.addEventListener("wheel", e => {
             // change zoom level
-            const operation = e.deltaY > 0 ? "-" : "+";
+            const operation = (e.deltaY || -e.wheelDelta) > 0 ? "-" : "+";
             changeZoomLevel(operation, e);
 
             // Handle brush size adjustment with ctrl key pressed
             if (isModifierKey(e, hotkeysConfig.canvas_hotkey_adjust)) {
                 e.preventDefault();
+
+                if (hotkeysConfig.canvas_hotkey_adjust === "Alt") {
+                    interactedWithAltKey = true;
+                }
 
                 // Increase or decrease brush size based on scroll direction
                 adjustBrushSize(elemId, e.deltaY);
@@ -832,6 +851,20 @@ onUiLoaded(async() => {
 
         document.addEventListener("keydown", handleMoveKeyDown);
         document.addEventListener("keyup", handleMoveKeyUp);
+
+
+        // Prevent firefox from opening main menu when alt is used as a hotkey for zoom or brush size
+        function handleAltKeyUp(e) {
+            if (e.key !== "Alt" || !interactedWithAltKey) {
+                return;
+            }
+
+            e.preventDefault();
+            interactedWithAltKey = false;
+        }
+
+        document.addEventListener("keyup", handleAltKeyUp);
+
 
         // Detect zoom level and update the pan speed.
         function updatePanPosition(movementX, movementY) {

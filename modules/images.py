@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-
+import functools
 import pytz
 import io
 import math
@@ -12,7 +12,9 @@ import re
 import numpy as np
 import piexif
 import piexif.helper
-from PIL import Image, ImageFont, ImageDraw, ImageColor, PngImagePlugin
+from PIL import Image, ImageFont, ImageDraw, ImageColor, PngImagePlugin, ImageOps
+# pillow_avif needs to be imported somewhere in code for it to work
+import pillow_avif # noqa: F401
 import string
 import json
 import hashlib
@@ -52,21 +54,29 @@ def image_grid(imgs, batch_size=1, rows=None):
     params = script_callbacks.ImageGridLoopParams(imgs, cols, rows)
     script_callbacks.image_grid_callback(params)
 
-    w, h = imgs[0].size
-    grid = Image.new('RGB', size=(params.cols * w, params.rows * h), color='black')
+    w, h = map(max, zip(*(img.size for img in imgs)))
+    grid_background_color = ImageColor.getcolor(opts.grid_background_color, 'RGB')
+    grid = Image.new('RGB', size=(params.cols * w, params.rows * h), color=grid_background_color)
 
     for i, img in enumerate(params.imgs):
-        grid.paste(img, box=(i % params.cols * w, i // params.cols * h))
+        img_w, img_h = img.size
+        w_offset, h_offset = 0 if img_w == w else (w - img_w) // 2, 0 if img_h == h else (h - img_h) // 2
+        grid.paste(img, box=(i % params.cols * w + w_offset, i // params.cols * h + h_offset))
 
     return grid
 
 
-Grid = namedtuple("Grid", ["tiles", "tile_w", "tile_h", "image_w", "image_h", "overlap"])
+class Grid(namedtuple("_Grid", ["tiles", "tile_w", "tile_h", "image_w", "image_h", "overlap"])):
+    @property
+    def tile_count(self) -> int:
+        """
+        The total number of tiles in the grid.
+        """
+        return sum(len(row[2]) for row in self.tiles)
 
 
-def split_grid(image, tile_w=512, tile_h=512, overlap=64):
-    w = image.width
-    h = image.height
+def split_grid(image: Image.Image, tile_w: int = 512, tile_h: int = 512, overlap: int = 64) -> Grid:
+    w, h = image.size
 
     non_overlap_width = tile_w - overlap
     non_overlap_height = tile_h - overlap
@@ -316,13 +326,16 @@ def resize_image(resize_mode, im, width, height, upscaler_name=None):
     return res
 
 
-invalid_filename_chars = '<>:"/\\|?*\n\r\t'
+if not shared.cmd_opts.unix_filenames_sanitization:
+    invalid_filename_chars = '#<>:"/\\|?*\n\r\t'
+else:
+    invalid_filename_chars = '/'
 invalid_filename_prefix = ' '
 invalid_filename_postfix = ' .'
 re_nonletters = re.compile(r'[\s' + string.punctuation + ']+')
 re_pattern = re.compile(r"(.*?)(?:\[([^\[\]]+)\]|$)")
 re_pattern_arg = re.compile(r"(.*)<([^>]*)>$")
-max_filename_part_length = 128
+max_filename_part_length = shared.cmd_opts.filenames_max_length
 NOTHING_AND_SKIP_PREVIOUS_TEXT = object()
 
 
@@ -339,8 +352,35 @@ def sanitize_filename_part(text, replace_spaces=True):
     return text
 
 
+@functools.cache
+def get_scheduler_str(sampler_name, scheduler_name):
+    """Returns {Scheduler} if the scheduler is applicable to the sampler"""
+    if scheduler_name == 'Automatic':
+        config = sd_samplers.find_sampler_config(sampler_name)
+        scheduler_name = config.options.get('scheduler', 'Automatic')
+    return scheduler_name.capitalize()
+
+
+@functools.cache
+def get_sampler_scheduler_str(sampler_name, scheduler_name):
+    """Returns the '{Sampler} {Scheduler}' if the scheduler is applicable to the sampler"""
+    return f'{sampler_name} {get_scheduler_str(sampler_name, scheduler_name)}'
+
+
+def get_sampler_scheduler(p, sampler):
+    """Returns '{Sampler} {Scheduler}' / '{Scheduler}' / 'NOTHING_AND_SKIP_PREVIOUS_TEXT'"""
+    if hasattr(p, 'scheduler') and hasattr(p, 'sampler_name'):
+        if sampler:
+            sampler_scheduler = get_sampler_scheduler_str(p.sampler_name, p.scheduler)
+        else:
+            sampler_scheduler = get_scheduler_str(p.sampler_name, p.scheduler)
+        return sanitize_filename_part(sampler_scheduler, replace_spaces=False)
+    return NOTHING_AND_SKIP_PREVIOUS_TEXT
+
+
 class FilenameGenerator:
     replacements = {
+        'basename': lambda self: self.basename or 'img',
         'seed': lambda self: self.seed if self.seed is not None else '',
         'seed_first': lambda self: self.seed if self.p.batch_size == 1 else self.p.all_seeds[0],
         'seed_last': lambda self: NOTHING_AND_SKIP_PREVIOUS_TEXT if self.p.batch_size == 1 else self.p.all_seeds[-1],
@@ -350,6 +390,8 @@ class FilenameGenerator:
         'height': lambda self: self.image.height,
         'styles': lambda self: self.p and sanitize_filename_part(", ".join([style for style in self.p.styles if not style == "None"]) or "None", replace_spaces=False),
         'sampler': lambda self: self.p and sanitize_filename_part(self.p.sampler_name, replace_spaces=False),
+        'sampler_scheduler': lambda self: self.p and get_sampler_scheduler(self.p, True),
+        'scheduler': lambda self: self.p and get_sampler_scheduler(self.p, False),
         'model_hash': lambda self: getattr(self.p, "sd_model_hash", shared.sd_model.sd_model_hash),
         'model_name': lambda self: sanitize_filename_part(shared.sd_model.sd_checkpoint_info.name_for_extra, replace_spaces=False),
         'date': lambda self: datetime.datetime.now().strftime('%Y-%m-%d'),
@@ -375,12 +417,13 @@ class FilenameGenerator:
     }
     default_time_format = '%Y%m%d%H%M%S'
 
-    def __init__(self, p, seed, prompt, image, zip=False):
+    def __init__(self, p, seed, prompt, image, zip=False, basename=""):
         self.p = p
         self.seed = seed
         self.prompt = prompt
         self.image = image
         self.zip = zip
+        self.basename = basename
 
     def get_vae_filename(self):
         """Get the name of the VAE file."""
@@ -561,6 +604,19 @@ def save_image_with_geninfo(image, geninfo, filename, extension=None, existing_p
             })
 
             piexif.insert(exif_bytes, filename)
+    elif extension.lower() == '.avif':
+        if opts.enable_pnginfo and geninfo is not None:
+            exif_bytes = piexif.dump({
+                "Exif": {
+                    piexif.ExifIFD.UserComment: piexif.helper.UserComment.dump(geninfo or "", encoding="unicode")
+                },
+            })
+        else:
+            exif_bytes = None
+
+        image.save(filename,format=image_format, quality=opts.jpeg_quality, exif=exif_bytes)
+    elif extension.lower() == ".gif":
+        image.save(filename, format=image_format, comment=geninfo)
     else:
         image.save(filename, format=image_format, quality=opts.jpeg_quality)
 
@@ -598,12 +654,12 @@ def save_image(image, path, basename, seed=None, prompt=None, extension='png', i
         txt_fullfn (`str` or None):
             If a text file is saved for this image, this will be its full path. Otherwise None.
     """
-    namegen = FilenameGenerator(p, seed, prompt, image)
+    namegen = FilenameGenerator(p, seed, prompt, image, basename=basename)
 
     # WebP and JPG formats have maximum dimension limits of 16383 and 65535 respectively. switch to PNG which has a much higher limit
     if (image.height > 65535 or image.width > 65535) and extension.lower() in ("jpg", "jpeg") or (image.height > 16383 or image.width > 16383) and extension.lower() == "webp":
         print('Image dimensions too large; saving as PNG')
-        extension = ".png"
+        extension = "png"
 
     if save_to_dirs is None:
         save_to_dirs = (grid and opts.grid_save_to_dirs) or (not grid and opts.save_to_dirs and not no_prompt)
@@ -661,7 +717,13 @@ def save_image(image, path, basename, seed=None, prompt=None, extension='png', i
 
         save_image_with_geninfo(image_to_save, info, temp_file_path, extension, existing_pnginfo=params.pnginfo, pnginfo_section_name=pnginfo_section_name)
 
-        os.replace(temp_file_path, filename_without_extension + extension)
+        filename = filename_without_extension + extension
+        if shared.opts.save_images_replace_action != "Replace":
+            n = 0
+            while os.path.exists(filename):
+                n += 1
+                filename = f"{filename_without_extension}-{n}{extension}"
+        os.replace(temp_file_path, filename)
 
     fullfn_without_extension, extension = os.path.splitext(params.filename)
     # if hasattr(os, 'statvfs'):
@@ -726,20 +788,25 @@ def read_info_from_image(image: Image.Image) -> tuple[str | None, dict]:
     geninfo = items.pop('parameters', None)
 
     if "exif" in items:
+        exif_data = items["exif"]
         try:
-            exif = piexif.load(items["exif"])
-            exif_comment = (exif or {}).get("Exif", {}).get(piexif.ExifIFD.UserComment, b'')
-        except:
-            exif_comment = None
-        if exif_comment:
-            try:
-                exif_comment = piexif.helper.UserComment.load(exif_comment)
-            except ValueError:
-                exif_comment = exif_comment.decode('utf8', errors="ignore")
+            exif = piexif.load(exif_data)
+        except OSError:
+            # memory / exif was not valid so piexif tried to read from a file
+            exif = None
+        exif_comment = (exif or {}).get("Exif", {}).get(piexif.ExifIFD.UserComment, b'')
+        try:
+            exif_comment = piexif.helper.UserComment.load(exif_comment)
+        except ValueError:
+            exif_comment = exif_comment.decode('utf8', errors="ignore")
 
-            if exif_comment:
-                items['exif comment'] = exif_comment
-                geninfo = exif_comment
+        if exif_comment:
+            geninfo = exif_comment
+    elif "comment" in items: # for gif
+        if isinstance(items["comment"], bytes):
+            geninfo = items["comment"].decode('utf8', errors="ignore")
+        else:
+            geninfo = items["comment"]
 
     for field in IGNORED_INFO_KEYS:
         items.pop(field, None)
@@ -762,7 +829,7 @@ def image_data(data):
     import gradio as gr
 
     try:
-        image = Image.open(io.BytesIO(data))
+        image = read(io.BytesIO(data))
         textinfo, _ = read_info_from_image(image)
         return textinfo, None
     except Exception:
@@ -788,3 +855,31 @@ def flatten(img, bgcolor):
         img = background
 
     return img.convert('RGB')
+
+
+def read(fp, **kwargs):
+    image = Image.open(fp, **kwargs)
+    image = fix_image(image)
+
+    return image
+
+
+def fix_image(image: Image.Image):
+    if image is None:
+        return None
+
+    try:
+        image = ImageOps.exif_transpose(image)
+        image = fix_png_transparency(image)
+    except Exception:
+        pass
+
+    return image
+
+
+def fix_png_transparency(image: Image.Image):
+    if image.mode not in ("RGB", "P") or not isinstance(image.info.get("transparency"), bytes):
+        return image
+
+    image = image.convert("RGBA")
+    return image

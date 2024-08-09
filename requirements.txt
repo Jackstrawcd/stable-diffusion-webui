@@ -2,10 +2,11 @@ GitPython
 Pillow
 accelerate
 
-basicsr
 blendmodes
 clean-fid
+diskcache
 einops
+facexlib
 fastapi>=0.90.1
 gfpgan
 gradio==3.41.2
@@ -18,6 +19,7 @@ omegaconf
 open-clip-torch
 
 piexif
+protobuf==3.20.0
 psutil
 pytorch_lightning
 realesrgan
@@ -75,3 +77,5 @@ tomesd
 esdk-obs-python
 gradio-orz==3.36.1
 opencv-python>=4.8.0
+
+pillow-avif-plugin==1.4.3

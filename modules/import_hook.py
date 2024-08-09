@@ -9,3 +9,14 @@ if "--xformers" not in "".join(sys.argv):
 if "--no-half-vae" not in "".join(sys.argv):
     sys.argv.append('--no-half-vae')
 sys.argv.append(f'--clip-models-path={models_path}/CLIP')
+
+# Hack to fix a changed import in torchvision 0.17+, which otherwise breaks
+# basicsr; see https://github.com/AUTOMATIC1111/stable-diffusion-webui/issues/13985
+try:
+    import torchvision.transforms.functional_tensor  # noqa: F401
+except ImportError:
+    try:
+        import torchvision.transforms.functional as functional
+        sys.modules["torchvision.transforms.functional_tensor"] = functional
+    except ImportError:
+        pass  # shrug...

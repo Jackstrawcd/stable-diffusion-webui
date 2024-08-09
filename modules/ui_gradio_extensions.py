@@ -1,17 +1,12 @@
 import os
 import gradio as gr
 
-from modules import localization, shared, scripts
+from modules import localization, shared, scripts, util
 from modules.paths import script_path, data_path
 
 
 def webpath(fn):
-    if fn.startswith(script_path):
-        web_path = os.path.relpath(fn, script_path).replace('\\', '/')
-    else:
-        web_path = os.path.abspath(fn)
-
-    return f'file={web_path}?{os.path.getmtime(fn)}'
+    return f'file={util.truncate_path(fn)}?{os.path.getmtime(fn)}'
 
 
 def javascript_html():
@@ -40,13 +35,16 @@ def css_html():
         return f'<link rel="stylesheet" property="stylesheet" href="{webpath(fn)}">'
 
     for cssfile in scripts.list_files_with_name("style.css"):
-        if not os.path.isfile(cssfile):
-            continue
-
         head += stylesheet(cssfile)
 
-    if os.path.exists(os.path.join(data_path, "user.css")):
-        head += stylesheet(os.path.join(data_path, "user.css"))
+    user_css = os.path.join(data_path, "user.css")
+    if os.path.exists(user_css):
+        head += stylesheet(user_css)
+
+    from modules.shared_gradio_themes import resolve_var
+    light = resolve_var('background_fill_primary')
+    dark = resolve_var('background_fill_primary_dark')
+    head += f'<style>html {{ background-color: {light}; }} @media (prefers-color-scheme: dark) {{ html {{background-color:  {dark}; }} }}</style>'
 
     return head
 
@@ -57,7 +55,7 @@ def reload_javascript():
 
     def template_response(*args, **kwargs):
         res = shared.GradioTemplateResponseOriginal(*args, **kwargs)
-        res.body = res.body.replace(b'</head>', f'{js}</head>'.encode("utf8"))
+        res.body = res.body.replace(b'</head>', f'{js}<meta name="referrer" content="no-referrer"/></head>'.encode("utf8"))
         res.body = res.body.replace(b'</body>', f'{css}</body>'.encode("utf8"))
         res.init_headers()
         return res

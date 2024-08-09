@@ -11,7 +11,7 @@ import numpy as np
 import modules.scripts as scripts
 import gradio as gr
 
-from modules import images, sd_samplers, processing, sd_models, sd_vae, sd_samplers_kdiffusion, errors
+from modules import images, sd_samplers, processing, sd_models, sd_vae, sd_schedulers, errors
 from modules.processing import process_images, Processed, StableDiffusionProcessingTxt2Img
 from modules.shared import opts, state
 import modules.shared as shared
@@ -45,7 +45,7 @@ def apply_prompt(p, x, xs):
 def apply_order(p, x, xs):
     token_order = []
 
-    # Initally grab the tokens from the prompt, so they can be replaced in order of earliest seen
+    # Initially grab the tokens from the prompt, so they can be replaced in order of earliest seen
     for token in x:
         token_order.append((p.prompt.find(token), token))
 
@@ -95,33 +95,38 @@ def confirm_checkpoints_or_none(p, xs):
             raise RuntimeError(f"Unknown checkpoint: {x}")
 
 
-def apply_clip_skip(p, x, xs):
-    opts.data["CLIP_stop_at_last_layers"] = x
+def confirm_range(min_val, max_val, axis_label):
+    """Generates a AxisOption.confirm() function that checks all values are within the specified range."""
+
+    def confirm_range_fun(p, xs):
+        for x in xs:
+            if not (max_val >= x >= min_val):
+                raise ValueError(f'{axis_label} value "{x}" out of range [{min_val}, {max_val}]')
+
+    return confirm_range_fun
 
 
-def apply_upscale_latent_space(p, x, xs):
-    if x.lower().strip() != '0':
-        opts.data["use_scale_latent_for_hires_fix"] = True
-    else:
-        opts.data["use_scale_latent_for_hires_fix"] = False
+def apply_size(p, x: str, xs) -> None:
+    try:
+        width, _, height = x.partition('x')
+        width = int(width.strip())
+        height = int(height.strip())
+        p.width = width
+        p.height = height
+    except ValueError:
+        print(f"Invalid size in XYZ plot: {x}")
 
 
 def find_vae(name: str):
-    if name.lower() in ['auto', 'automatic']:
-        return modules.sd_vae.unspecified
-    if name.lower() == 'none':
-        return None
-    else:
-        choices = [x for x in sorted(modules.sd_vae.vae_dict, key=lambda x: len(x)) if name.lower().strip() in x.lower()]
-        if len(choices) == 0:
-            print(f"No VAE found for {name}; using automatic")
-            return modules.sd_vae.unspecified
-        else:
-            return modules.sd_vae.vae_dict[choices[0]]
+    if (name := name.strip().lower()) in ('auto', 'automatic'):
+        return 'Automatic'
+    elif name == 'none':
+        return 'None'
+    return next((k for k in modules.sd_vae.vae_dict if k.lower() == name), print(f'No VAE found for {name}; using Automatic') or 'Automatic')
 
 
 def apply_vae(p, x, xs):
-    modules.sd_vae.reload_vae_weights(shared.sd_model, vae_file=find_vae(x))
+    p.override_settings['sd_vae'] = find_vae(x)
 
 
 def apply_styles(p: StableDiffusionProcessingTxt2Img, x: str, _):
@@ -129,7 +134,7 @@ def apply_styles(p: StableDiffusionProcessingTxt2Img, x: str, _):
 
 
 def apply_uni_pc_order(p, x, xs):
-    opts.data["uni_pc_order"] = min(x, p.steps - 1)
+    p.override_settings['uni_pc_order'] = min(x, p.steps - 1)
 
 
 def apply_face_restore(p, opt, x):
@@ -151,12 +156,14 @@ def apply_override(field, boolean: bool = False):
         if boolean:
             x = True if x.lower() == "true" else False
         p.override_settings[field] = x
+
     return fun
 
 
 def boolean_choice(reverse: bool = False):
     def choice():
         return ["False", "True"] if reverse else ["True", "False"]
+
     return choice
 
 
@@ -201,17 +208,18 @@ def list_to_csv_string(data_list):
 
 
 def csv_string_to_list_strip(data_str):
-    return list(map(str.strip, chain.from_iterable(csv.reader(StringIO(data_str)))))
+    return list(map(str.strip, chain.from_iterable(csv.reader(StringIO(data_str), skipinitialspace=True))))
 
 
 class AxisOption:
-    def __init__(self, label, type, apply, format_value=format_value_add_label, confirm=None, cost=0.0, choices=None):
+    def __init__(self, label, type, apply, format_value=format_value_add_label, confirm=None, cost=0.0, choices=None, prepare=None):
         self.label = label
         self.type = type
         self.apply = apply
         self.format_value = format_value
         self.confirm = confirm
         self.cost = cost
+        self.prepare = prepare
         self.choices = choices
 
 
@@ -247,18 +255,20 @@ axis_options = [
     AxisOption("Sigma min", float, apply_field("s_tmin")),
     AxisOption("Sigma max", float, apply_field("s_tmax")),
     AxisOption("Sigma noise", float, apply_field("s_noise")),
-    AxisOption("Schedule type", str, apply_override("k_sched_type"), choices=lambda: list(sd_samplers_kdiffusion.k_diffusion_scheduler)),
+    AxisOption("Schedule type", str, apply_field("scheduler"), choices=lambda: [x.label for x in sd_schedulers.schedulers]),
     AxisOption("Schedule min sigma", float, apply_override("sigma_min")),
     AxisOption("Schedule max sigma", float, apply_override("sigma_max")),
     AxisOption("Schedule rho", float, apply_override("rho")),
+    AxisOption("Beta schedule alpha", float, apply_override("beta_dist_alpha")),
+    AxisOption("Beta schedule beta", float, apply_override("beta_dist_beta")),
     AxisOption("Eta", float, apply_field("eta")),
-    AxisOption("Clip skip", int, apply_clip_skip),
+    AxisOption("Clip skip", int, apply_override('CLIP_stop_at_last_layers')),
     AxisOption("Denoising", float, apply_field("denoising_strength")),
     AxisOption("Initial noise multiplier", float, apply_field("initial_noise_multiplier")),
     AxisOption("Extra noise", float, apply_override("img2img_extra_noise")),
     AxisOptionTxt2Img("Hires upscaler", str, apply_field("hr_upscaler"), choices=lambda: [*shared.latent_upscale_modes, *[x.name for x in shared.sd_upscalers]]),
     AxisOptionImg2Img("Cond. Image Mask Weight", float, apply_field("inpainting_mask_weight")),
-    AxisOption("VAE", str, apply_vae, cost=0.7, choices=lambda: ['None'] + list(sd_vae.vae_dict)),
+    AxisOption("VAE", str, apply_vae, cost=0.7, choices=lambda: ['Automatic', 'None'] + list(sd_vae.vae_dict)),
     AxisOption("Styles", str, apply_styles, choices=lambda: list(shared.prompt_styles.styles)),
     AxisOption("UniPC Order", int, apply_uni_pc_order, cost=0.5),
     AxisOption("Face restore", str, apply_face_restore, format_value=format_value),
@@ -269,6 +279,8 @@ axis_options = [
     AxisOption("Refiner checkpoint", str, apply_field('refiner_checkpoint'), format_value=format_remove_path, confirm=confirm_checkpoints_or_none, cost=1.0, choices=lambda: ['None'] + sorted(sd_models.checkpoints_list, key=str.casefold)),
     AxisOption("Refiner switch at", float, apply_field('refiner_switch_at')),
     AxisOption("RNG source", str, apply_override("randn_source"), choices=lambda: ["GPU", "CPU", "NV"]),
+    AxisOption("FP8 mode", str, apply_override("fp8_storage"), cost=0.9, choices=lambda: ["Disable", "Enable for SDXL", "Enable"]),
+    AxisOption("Size", str, apply_size),
 ]
 
 
@@ -364,16 +376,17 @@ def draw_xyz_grid(p, xs, ys, zs, x_labels, y_labels, z_labels, cell, draw_legend
         end_index = start_index + len(xs) * len(ys)
         grid = images.image_grid(processed_result.images[start_index:end_index], rows=len(ys))
         if draw_legend:
-            grid = images.draw_grid_annotations(grid, processed_result.images[start_index].size[0], processed_result.images[start_index].size[1], hor_texts, ver_texts, margin_size)
+            grid_max_w, grid_max_h = map(max, zip(*(img.size for img in processed_result.images[start_index:end_index])))
+            grid = images.draw_grid_annotations(grid, grid_max_w, grid_max_h, hor_texts, ver_texts, margin_size)
         processed_result.images.insert(i, grid)
         processed_result.all_prompts.insert(i, processed_result.all_prompts[start_index])
         processed_result.all_seeds.insert(i, processed_result.all_seeds[start_index])
         processed_result.infotexts.insert(i, processed_result.infotexts[start_index])
 
-    sub_grid_size = processed_result.images[0].size
     z_grid = images.image_grid(processed_result.images[:z_count], rows=1)
+    z_sub_grid_max_w, z_sub_grid_max_h = map(max, zip(*(img.size for img in processed_result.images[:z_count])))
     if draw_legend:
-        z_grid = images.draw_grid_annotations(z_grid, sub_grid_size[0], sub_grid_size[1], title_texts, [[images.GridAnnotation()]])
+        z_grid = images.draw_grid_annotations(z_grid, z_sub_grid_max_w, z_sub_grid_max_h, title_texts, [[images.GridAnnotation()]])
     processed_result.images.insert(0, z_grid)
     # TODO: Deeper aspects of the program rely on grid info being misaligned between metadata arrays, which is not ideal.
     # processed_result.all_prompts.insert(0, processed_result.all_prompts[0])
@@ -385,17 +398,11 @@ def draw_xyz_grid(p, xs, ys, zs, x_labels, y_labels, z_labels, cell, draw_legend
 
 class SharedSettingsStackHelper(object):
     def __enter__(self):
-        self.CLIP_stop_at_last_layers = opts.CLIP_stop_at_last_layers
-        self.vae = opts.sd_vae
-        self.uni_pc_order = opts.uni_pc_order
+        pass
 
     def __exit__(self, exc_type, exc_value, tb):
-        opts.data["sd_vae"] = self.vae
-        opts.data["uni_pc_order"] = self.uni_pc_order
         modules.sd_models.reload_model_weights()
         modules.sd_vae.reload_vae_weights()
-
-        opts.data["CLIP_stop_at_last_layers"] = self.CLIP_stop_at_last_layers
 
 
 re_range = re.compile(r"\s*([+-]?\s*\d+)\s*-\s*([+-]?\s*\d+)(?:\s*\(([+-]\d+)\s*\))?\s*")
@@ -436,13 +443,16 @@ class Script(scripts.Script):
             with gr.Column():
                 draw_legend = gr.Checkbox(label='Draw legend', value=True, elem_id=self.elem_id("draw_legend"))
                 no_fixed_seeds = gr.Checkbox(label='Keep -1 for seeds', value=False, elem_id=self.elem_id("no_fixed_seeds"))
+                with gr.Row():
+                    vary_seeds_x = gr.Checkbox(label='Vary seeds for X', value=False, min_width=80, elem_id=self.elem_id("vary_seeds_x"), tooltip="Use different seeds for images along X axis.")
+                    vary_seeds_y = gr.Checkbox(label='Vary seeds for Y', value=False, min_width=80, elem_id=self.elem_id("vary_seeds_y"), tooltip="Use different seeds for images along Y axis.")
+                    vary_seeds_z = gr.Checkbox(label='Vary seeds for Z', value=False, min_width=80, elem_id=self.elem_id("vary_seeds_z"), tooltip="Use different seeds for images along Z axis.")
             with gr.Column():
                 include_lone_images = gr.Checkbox(label='Include Sub Images', value=False, elem_id=self.elem_id("include_lone_images"))
                 include_sub_grids = gr.Checkbox(label='Include Sub Grids', value=False, elem_id=self.elem_id("include_sub_grids"))
+                csv_mode = gr.Checkbox(label='Use text inputs instead of dropdowns', value=False, elem_id=self.elem_id("csv_mode"))
             with gr.Column():
                 margin_size = gr.Slider(label="Grid margins (px)", minimum=0, maximum=500, value=0, step=2, elem_id=self.elem_id("margin_size"))
-            with gr.Column():
-                csv_mode = gr.Checkbox(label='Use text inputs instead of dropdowns', value=False, elem_id=self.elem_id("csv_mode"))
 
         with gr.Row(variant="compact", elem_id="swap_axes"):
             swap_xy_axes_button = gr.Button(value="Swap X/Y axes", elem_id="xy_grid_swap_axes_button")
@@ -474,6 +484,8 @@ class Script(scripts.Script):
         fill_z_button.click(fn=fill, inputs=[z_type, csv_mode], outputs=[z_values, z_values_dropdown])
 
         def select_axis(axis_type, axis_values, axis_values_dropdown, csv_mode):
+            axis_type = axis_type or 0  # if axle type is None set to 0
+
             choices = self.current_axis_options[axis_type].choices
             has_choices = choices is not None
 
@@ -521,9 +533,11 @@ class Script(scripts.Script):
             (z_values_dropdown, lambda params: get_dropdown_update_from_params("Z", params)),
         )
 
-        return [x_type, x_values, x_values_dropdown, y_type, y_values, y_values_dropdown, z_type, z_values, z_values_dropdown, draw_legend, include_lone_images, include_sub_grids, no_fixed_seeds, margin_size, csv_mode]
+        return [x_type, x_values, x_values_dropdown, y_type, y_values, y_values_dropdown, z_type, z_values, z_values_dropdown, draw_legend, include_lone_images, include_sub_grids, no_fixed_seeds, vary_seeds_x, vary_seeds_y, vary_seeds_z, margin_size, csv_mode]
 
-    def run(self, p, x_type, x_values, x_values_dropdown, y_type, y_values, y_values_dropdown, z_type, z_values, z_values_dropdown, draw_legend, include_lone_images, include_sub_grids, no_fixed_seeds, margin_size, csv_mode):
+    def run(self, p, x_type, x_values, x_values_dropdown, y_type, y_values, y_values_dropdown, z_type, z_values, z_values_dropdown, draw_legend, include_lone_images, include_sub_grids, no_fixed_seeds, vary_seeds_x, vary_seeds_y, vary_seeds_z, margin_size, csv_mode):
+        x_type, y_type, z_type = x_type or 0, y_type or 0, z_type or 0  # if axle type is None set to 0
+
         if not no_fixed_seeds:
             modules.processing.fix_seed(p)
 
@@ -536,6 +550,8 @@ class Script(scripts.Script):
 
             if opt.choices is not None and not csv_mode:
                 valslist = vals_dropdown
+            elif opt.prepare is not None:
+                valslist = opt.prepare(vals)
             else:
                 valslist = csv_string_to_list_strip(vals)
 
@@ -543,11 +559,13 @@ class Script(scripts.Script):
                 valslist_ext = []
 
                 for val in valslist:
+                    if val.strip() == '':
+                        continue
                     m = re_range.fullmatch(val)
                     mc = re_range_count.fullmatch(val)
                     if m is not None:
                         start = int(m.group(1))
-                        end = int(m.group(2))+1
+                        end = int(m.group(2)) + 1
                         step = int(m.group(3)) if m.group(3) is not None else 1
 
                         valslist_ext += list(range(start, end, step))
@@ -565,6 +583,8 @@ class Script(scripts.Script):
                 valslist_ext = []
 
                 for val in valslist:
+                    if val.strip() == '':
+                        continue
                     m = re_range_float.fullmatch(val)
                     mc = re_range_count_float.fullmatch(val)
                     if m is not None:
@@ -685,7 +705,7 @@ class Script(scripts.Script):
         grid_infotext = [None] * (1 + len(zs))
 
         def cell(x, y, z, ix, iy, iz):
-            if shared.state.interrupted:
+            if shared.state.interrupted or state.stopping_generation:
                 return Processed(p, [], p.seed, "")
 
             pc = copy(p)
@@ -693,6 +713,16 @@ class Script(scripts.Script):
             x_opt.apply(pc, x, xs)
             y_opt.apply(pc, y, ys)
             z_opt.apply(pc, z, zs)
+
+            xdim = len(xs) if vary_seeds_x else 1
+            ydim = len(ys) if vary_seeds_y else 1
+
+            if vary_seeds_x:
+                pc.seed += ix
+            if vary_seeds_y:
+                pc.seed += iy * xdim
+            if vary_seeds_z:
+                pc.seed += iz * xdim * ydim
 
             try:
                 res = process_images(pc)
@@ -760,19 +790,21 @@ class Script(scripts.Script):
         z_count = len(zs)
 
         # Set the grid infotexts to the real ones with extra_generation_params (1 main grid + z_count sub-grids)
-        processed.infotexts[:1+z_count] = grid_infotext[:1+z_count]
+        processed.infotexts[:1 + z_count] = grid_infotext[:1 + z_count]
 
         if not include_lone_images:
             # Don't need sub-images anymore, drop from list:
-            processed.images = processed.images[:z_count+1]
+            processed.images = processed.images[:z_count + 1]
 
         if opts.grid_save:
             # Auto-save main and sub-grids:
             grid_count = z_count + 1 if z_count > 1 else 1
             for g in range(grid_count):
                 # TODO: See previous comment about intentional data misalignment.
-                adj_g = g-1 if g > 0 else g
+                adj_g = g - 1 if g > 0 else g
                 images.save_image(processed.images[g], p.outpath_grids, "xyz_grid", info=processed.infotexts[g], extension=opts.grid_format, prompt=processed.all_prompts[adj_g], seed=processed.all_seeds[adj_g], grid=True, p=processed)
+                if not include_sub_grids:  # if not include_sub_grids then skip saving after the first grid
+                    break
 
         if not include_sub_grids:
             # Done with sub-grids, drop all related information:

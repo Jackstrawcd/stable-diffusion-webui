@@ -1,11 +1,19 @@
+import html
 import sys
 
+from modules import script_callbacks, scripts, ui_components
+from modules.options import OptionHTML, OptionInfo
 from modules.shared_cmd_options import cmd_opts
 
 
 def realesrgan_models_names():
     import modules.realesrgan_model
     return [x.name for x in modules.realesrgan_model.get_realesrgan_models(None)]
+
+
+def dat_models_names():
+    import modules.dat_model
+    return [x.name for x in modules.dat_model.get_dat_models(None)]
 
 
 def postprocessing_scripts():
@@ -44,9 +52,9 @@ def refresh_unet_list():
     modules.sd_unet.list_unets()
 
 
-def list_checkpoint_tiles():
+def list_checkpoint_tiles(use_short=False):
     import modules.sd_models
-    return modules.sd_models.checkpoint_tiles()
+    return modules.sd_models.checkpoint_tiles(use_short)
 
 
 def refresh_checkpoints():
@@ -66,7 +74,25 @@ def reload_hypernetworks():
     shared.hypernetworks = hypernetwork.list_hypernetworks(cmd_opts.hypernetwork_dir)
 
 
+def get_infotext_names():
+    from modules import infotext_utils, shared
+    res = {}
+
+    for info in shared.opts.data_labels.values():
+        if info.infotext:
+            res[info.infotext] = 1
+
+    for tab_data in infotext_utils.paste_fields.values():
+        for _, name in tab_data.get("fields") or []:
+            if isinstance(name, str):
+                res[name] = 1
+
+    return list(res)
+
+
 ui_reorder_categories_builtin_items = [
+    "prompt",
+    "image",
     "inpaint",
     "sampler",
     "accordions",
@@ -93,6 +119,45 @@ def ui_reorder_categories():
     yield from sections
 
     yield "scripts"
+
+
+def callbacks_order_settings():
+    options = {
+        "sd_vae_explanation": OptionHTML("""
+    For categories below, callbacks added to dropdowns happen before others, in order listed.
+    """),
+
+    }
+
+    callback_options = {}
+
+    for category, _ in script_callbacks.enumerate_callbacks():
+        callback_options[category] = script_callbacks.ordered_callbacks(category, enable_user_sort=False)
+
+    for method_name in scripts.scripts_txt2img.callback_names:
+        callback_options["script_" + method_name] = scripts.scripts_txt2img.create_ordered_callbacks_list(method_name, enable_user_sort=False)
+
+    for method_name in scripts.scripts_img2img.callback_names:
+        callbacks = callback_options.get("script_" + method_name, [])
+
+        for addition in scripts.scripts_img2img.create_ordered_callbacks_list(method_name, enable_user_sort=False):
+            if any(x.name == addition.name for x in callbacks):
+                continue
+
+            callbacks.append(addition)
+
+        callback_options["script_" + method_name] = callbacks
+
+    for category, callbacks in callback_options.items():
+        if not callbacks:
+            continue
+
+        option_info = OptionInfo([], f"{category} callback priority", ui_components.DropdownMulti, {"choices": [x.name for x in callbacks]})
+        option_info.needs_restart()
+        option_info.html("<div class='info'>Default order: <ol>" + "".join(f"<li>{html.escape(x.name)}</li>\n" for x in callbacks) + "</ol></div>")
+        options['prioritized_callbacks_' + category] = option_info
+
+    return options
 
 
 class Shared(sys.modules[__name__].__class__):

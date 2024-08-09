@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-import os
-import shutil
 import importlib
+import logging
+import os
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+import torch
 
 from modules import shared
 from modules.upscaler import Upscaler, UpscalerLanczos, UpscalerNearest, UpscalerNone
-from modules.paths import script_path, models_path
+
+if TYPE_CHECKING:
+    import spandrel
+
+logger = logging.getLogger(__name__)
 
 
 def load_file_from_url(
@@ -16,6 +23,7 @@ def load_file_from_url(
     model_dir: str,
     progress: bool = True,
     file_name: str | None = None,
+    hash_prefix: str | None = None,
 ) -> str:
     """Download a file from `url` into `model_dir`, using the file present if possible.
 
@@ -29,11 +37,11 @@ def load_file_from_url(
     if not os.path.exists(cached_file):
         print(f'Downloading: "{url}" to {cached_file}\n')
         from torch.hub import download_url_to_file
-        download_url_to_file(url, cached_file, progress=progress)
+        download_url_to_file(url, cached_file, progress=progress, hash_prefix=hash_prefix)
     return cached_file
 
 
-def load_models(model_path: str, model_url: str = None, command_path: str = None, ext_filter=None, download_name=None, ext_blacklist=None) -> list:
+def load_models(model_path: str, model_url: str = None, command_path: str = None, ext_filter=None, download_name=None, ext_blacklist=None, hash_prefix=None) -> list:
     """
     A one-and done loader to try finding the desired models in specified directories.
 
@@ -42,6 +50,7 @@ def load_models(model_path: str, model_url: str = None, command_path: str = None
     @param model_path: The location to store/find models in.
     @param command_path: A command-line argument to search for models in first.
     @param ext_filter: An optional list of filename extensions to filter by
+    @param hash_prefix: the expected sha256 of the model_url
     @return: A list of paths containing the desired model(s)
     """
     output = []
@@ -74,7 +83,7 @@ def load_models(model_path: str, model_url: str = None, command_path: str = None
 
         if model_url is not None and len(output) == 0:
             if download_name is not None:
-                output.append(load_file_from_url(model_url, model_dir=places[0], file_name=download_name))
+                output.append(load_file_from_url(model_url, model_dir=places[0], file_name=download_name, hash_prefix=hash_prefix))
             else:
                 output.append(model_url)
 
@@ -93,54 +102,6 @@ def friendly_name(file: str):
     return model_name
 
 
-def cleanup_models():
-    # This code could probably be more efficient if we used a tuple list or something to store the src/destinations
-    # and then enumerate that, but this works for now. In the future, it'd be nice to just have every "model" scaler
-    # somehow auto-register and just do these things...
-    root_path = script_path
-    src_path = models_path
-    dest_path = os.path.join(models_path, "Stable-diffusion")
-    move_files(src_path, dest_path, ".ckpt")
-    move_files(src_path, dest_path, ".safetensors")
-    src_path = os.path.join(root_path, "ESRGAN")
-    dest_path = os.path.join(models_path, "ESRGAN")
-    move_files(src_path, dest_path)
-    src_path = os.path.join(models_path, "BSRGAN")
-    dest_path = os.path.join(models_path, "ESRGAN")
-    move_files(src_path, dest_path, ".pth")
-    src_path = os.path.join(root_path, "gfpgan")
-    dest_path = os.path.join(models_path, "GFPGAN")
-    move_files(src_path, dest_path)
-    src_path = os.path.join(root_path, "SwinIR")
-    dest_path = os.path.join(models_path, "SwinIR")
-    move_files(src_path, dest_path)
-    src_path = os.path.join(root_path, "repositories/latent-diffusion/experiments/pretrained_models/")
-    dest_path = os.path.join(models_path, "LDSR")
-    move_files(src_path, dest_path)
-
-
-def move_files(src_path: str, dest_path: str, ext_filter: str = None):
-    try:
-        os.makedirs(dest_path, exist_ok=True)
-        if os.path.exists(src_path):
-            for file in os.listdir(src_path):
-                fullpath = os.path.join(src_path, file)
-                if os.path.isfile(fullpath):
-                    if ext_filter is not None:
-                        if ext_filter not in file:
-                            continue
-                    print(f"Moving {file} from {src_path} to {dest_path}.")
-                    try:
-                        shutil.move(fullpath, dest_path)
-                    except Exception:
-                        pass
-            if len(os.listdir(src_path)) == 0:
-                print(f"Removing empty folder: {src_path}")
-                shutil.rmtree(src_path, True)
-    except Exception:
-        pass
-
-
 def load_upscalers():
     # We can only do this 'magic' method to dynamically load upscalers if they are referenced,
     # so we'll try to import any _model.py files before looking in __subclasses__
@@ -154,7 +115,7 @@ def load_upscalers():
             except Exception:
                 pass
 
-    datas = []
+    data = []
     commandline_options = vars(shared.cmd_opts)
 
     # some of upscaler classes will not go away after reloading their modules, and we'll end
@@ -173,10 +134,67 @@ def load_upscalers():
         scaler = cls(commandline_model_path)
         scaler.user_path = commandline_model_path
         scaler.model_download_path = commandline_model_path or scaler.model_path
-        datas += scaler.scalers
+        data += scaler.scalers
 
     shared.sd_upscalers = sorted(
-        datas,
+        data,
         # Special case for UpscalerNone keeps it at the beginning of the list.
         key=lambda x: x.name.lower() if not isinstance(x.scaler, (UpscalerNone, UpscalerLanczos, UpscalerNearest)) else ""
     )
+
+# None: not loaded, False: failed to load, True: loaded
+_spandrel_extra_init_state = None
+
+
+def _init_spandrel_extra_archs() -> None:
+    """
+    Try to initialize `spandrel_extra_archs` (exactly once).
+    """
+    global _spandrel_extra_init_state
+    if _spandrel_extra_init_state is not None:
+        return
+
+    try:
+        import spandrel
+        import spandrel_extra_arches
+        spandrel.MAIN_REGISTRY.add(*spandrel_extra_arches.EXTRA_REGISTRY)
+        _spandrel_extra_init_state = True
+    except Exception:
+        logger.warning("Failed to load spandrel_extra_arches", exc_info=True)
+        _spandrel_extra_init_state = False
+
+
+def load_spandrel_model(
+    path: str | os.PathLike,
+    *,
+    device: str | torch.device | None,
+    prefer_half: bool = False,
+    dtype: str | torch.dtype | None = None,
+    expected_architecture: str | None = None,
+) -> spandrel.ModelDescriptor:
+    global _spandrel_extra_init_state
+
+    import spandrel
+    _init_spandrel_extra_archs()
+
+    model_descriptor = spandrel.ModelLoader(device=device).load_from_file(str(path))
+    arch = model_descriptor.architecture
+    if expected_architecture and arch.name != expected_architecture:
+        logger.warning(
+            f"Model {path!r} is not a {expected_architecture!r} model (got {arch.name!r})",
+        )
+    half = False
+    if prefer_half:
+        if model_descriptor.supports_half:
+            model_descriptor.model.half()
+            half = True
+        else:
+            logger.info("Model %s does not support half precision, ignoring --half", path)
+    if dtype:
+        model_descriptor.model.to(dtype=dtype)
+    model_descriptor.model.eval()
+    logger.debug(
+        "Loaded %s from %s (device=%s, half=%s, dtype=%s)",
+        arch, path, device, half, dtype,
+    )
+    return model_descriptor

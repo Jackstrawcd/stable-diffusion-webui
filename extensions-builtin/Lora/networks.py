@@ -1,3 +1,5 @@
+from __future__ import annotations
+import gradio as gr
 import logging
 import os
 import re
@@ -5,16 +7,22 @@ import re
 import lora_patches
 import network
 import network_lora
+import network_glora
 import network_hada
 import network_ia3
 import network_lokr
 import network_full
 import network_norm
+import network_oft
 
 import torch
 from typing import Union
 
 from modules import shared, devices, sd_models, errors, scripts, sd_hijack
+import modules.textual_inversion.textual_inversion as textual_inversion
+import modules.models.sd3.mmdit
+
+from lora_logger import logger
 
 module_types = [
     network_lora.ModuleTypeLora(),
@@ -23,6 +31,8 @@ module_types = [
     network_lokr.ModuleTypeLokr(),
     network_full.ModuleTypeFull(),
     network_norm.ModuleTypeNorm(),
+    network_glora.ModuleTypeGLora(),
+    network_oft.ModuleTypeOFT(),
 ]
 
 
@@ -122,7 +132,9 @@ def assign_network_names_to_compvis_modules(sd_model):
                 network_layer_mapping[network_name] = module
                 module.network_layer_name = network_name
     else:
-        for name, module in shared.sd_model.cond_stage_model.wrapped.named_modules():
+        cond_stage_model = getattr(shared.sd_model.cond_stage_model, 'wrapped', shared.sd_model.cond_stage_model)
+
+        for name, module in cond_stage_model.named_modules():
             network_name = name.replace(".", "_")
             network_layer_mapping[network_name] = module
             module.network_layer_name = network_name
@@ -133,6 +145,14 @@ def assign_network_names_to_compvis_modules(sd_model):
         module.network_layer_name = network_name
 
     sd_model.network_layer_mapping = network_layer_mapping
+
+
+class BundledTIHash(str):
+    def __init__(self, hash_str):
+        self.hash = hash_str
+
+    def __str__(self):
+        return self.hash if shared.opts.lora_bundled_ti_to_infotext else ''
 
 
 def load_network(name, network_on_disk):
@@ -147,13 +167,42 @@ def load_network(name, network_on_disk):
 
     keys_failed_to_match = {}
     is_sd2 = 'model_transformer_resblocks' in shared.sd_model.network_layer_mapping
+    if hasattr(shared.sd_model, 'diffusers_weight_map'):
+        diffusers_weight_map = shared.sd_model.diffusers_weight_map
+    elif hasattr(shared.sd_model, 'diffusers_weight_mapping'):
+        diffusers_weight_map = {}
+        for k, v in shared.sd_model.diffusers_weight_mapping():
+            diffusers_weight_map[k] = v
+        shared.sd_model.diffusers_weight_map = diffusers_weight_map
+    else:
+        diffusers_weight_map = None
 
     matched_networks = {}
+    bundle_embeddings = {}
 
     for key_network, weight in sd.items():
-        key_network_without_network_parts, network_part = key_network.split(".", 1)
 
-        key = convert_diffusers_name_to_compvis(key_network_without_network_parts, is_sd2)
+        if diffusers_weight_map:
+            key_network_without_network_parts, network_name, network_weight = key_network.rsplit(".", 2)
+            network_part = network_name + '.' + network_weight
+        else:
+            key_network_without_network_parts, _, network_part = key_network.partition(".")
+
+        if key_network_without_network_parts == "bundle_emb":
+            emb_name, vec_name = network_part.split(".", 1)
+            emb_dict = bundle_embeddings.get(emb_name, {})
+            if vec_name.split('.')[0] == 'string_to_param':
+                _, k2 = vec_name.split('.', 1)
+                emb_dict['string_to_param'] = {k2: weight}
+            else:
+                emb_dict[vec_name] = weight
+            bundle_embeddings[emb_name] = emb_dict
+
+        if diffusers_weight_map:
+            key = diffusers_weight_map.get(key_network_without_network_parts, key_network_without_network_parts)
+        else:
+            key = convert_diffusers_name_to_compvis(key_network_without_network_parts, is_sd2)
+
         sd_module = shared.sd_model.network_layer_mapping.get(key, None)
 
         if sd_module is None:
@@ -173,6 +222,17 @@ def load_network(name, network_on_disk):
             if sd_module is None:
                 key = key_network_without_network_parts.replace("lora_te1_text_model", "transformer_text_model")
                 sd_module = shared.sd_model.network_layer_mapping.get(key, None)
+
+        # kohya_ss OFT module
+        elif sd_module is None and "oft_unet" in key_network_without_network_parts:
+            key = key_network_without_network_parts.replace("oft_unet", "diffusion_model")
+            sd_module = shared.sd_model.network_layer_mapping.get(key, None)
+
+        # KohakuBlueLeaf OFT module
+        if sd_module is None and "oft_diag" in key:
+            key = key_network_without_network_parts.replace("lora_unet", "diffusion_model")
+            key = key_network_without_network_parts.replace("lora_te1_text_model", "0_transformer_text_model")
+            sd_module = shared.sd_model.network_layer_mapping.get(key, None)
 
         if sd_module is None:
             keys_failed_to_match[key_network] = key
@@ -195,6 +255,15 @@ def load_network(name, network_on_disk):
 
         net.modules[key] = net_module
 
+    embeddings = {}
+    for emb_name, data in bundle_embeddings.items():
+        embedding = textual_inversion.create_embedding_from_data(data, emb_name, filename=network_on_disk.filename + "/" + emb_name)
+        embedding.loaded = None
+        embedding.shorthash = BundledTIHash(name)
+        embeddings[emb_name] = embedding
+
+    net.bundle_embeddings = embeddings
+
     if keys_failed_to_match:
         logging.debug(f"Network {network_on_disk.filename} didn't match keys: {keys_failed_to_match}")
 
@@ -210,19 +279,33 @@ def purge_networks_from_memory():
 
 
 def load_networks(names, te_multipliers=None, unet_multipliers=None, dyn_dims=None):
+    emb_db = sd_hijack.model_hijack.embedding_db
     already_loaded = {}
 
     for net in loaded_networks:
         if net.name in names:
             already_loaded[net.name] = net
+        for emb_name, embedding in net.bundle_embeddings.items():
+            if embedding.loaded:
+                emb_db.register_embedding_by_name(None, shared.sd_model, emb_name)
 
     loaded_networks.clear()
 
-    networks_on_disk = [available_network_aliases.get(name, None) for name in names]
+    unavailable_networks = []
+    for name in names:
+        if name.lower() in forbidden_network_aliases and available_networks.get(name) is None:
+            unavailable_networks.append(name)
+        elif available_network_aliases.get(name) is None:
+            unavailable_networks.append(name)
+
+    if unavailable_networks:
+        update_available_networks_by_names(unavailable_networks)
+
+    networks_on_disk = [available_networks.get(name, None) if name.lower() in forbidden_network_aliases else available_network_aliases.get(name, None) for name in names]
     if any(x is None for x in networks_on_disk):
         list_available_networks()
 
-        networks_on_disk = [available_network_aliases.get(name, None) for name in names]
+        networks_on_disk = [available_networks.get(name, None) if name.lower() in forbidden_network_aliases else available_network_aliases.get(name, None) for name in names]
 
     failed_to_load_networks = []
 
@@ -257,10 +340,52 @@ def load_networks(names, te_multipliers=None, unet_multipliers=None, dyn_dims=No
         net.dyn_dim = dyn_dims[i] if dyn_dims else 1.0
         loaded_networks.append(net)
 
+        for emb_name, embedding in net.bundle_embeddings.items():
+            if embedding.loaded is None and emb_name in emb_db.word_embeddings:
+                logger.warning(
+                    f'Skip bundle embedding: "{emb_name}"'
+                    ' as it was already loaded from embeddings folder'
+                )
+                continue
+
+            embedding.loaded = False
+            if emb_db.expected_shape == -1 or emb_db.expected_shape == embedding.shape:
+                embedding.loaded = True
+                emb_db.register_embedding(embedding, shared.sd_model)
+            else:
+                emb_db.skipped_embeddings[name] = embedding
+
     if failed_to_load_networks:
-        sd_hijack.model_hijack.comments.append("Networks not found: " + ", ".join(failed_to_load_networks))
+        lora_not_found_message = f'Lora not found: {", ".join(failed_to_load_networks)}'
+        sd_hijack.model_hijack.comments.append(lora_not_found_message)
+        if shared.opts.lora_not_found_warning_console:
+            print(f'\n{lora_not_found_message}\n')
+        if shared.opts.lora_not_found_gradio_warning:
+            gr.Warning(lora_not_found_message)
 
     purge_networks_from_memory()
+
+
+def allowed_layer_without_weight(layer):
+    if isinstance(layer, torch.nn.LayerNorm) and not layer.elementwise_affine:
+        return True
+
+    return False
+
+
+def store_weights_backup(weight):
+    if weight is None:
+        return None
+
+    return weight.to(devices.cpu, copy=True)
+
+
+def restore_weights_backup(obj, field, weight):
+    if weight is None:
+        setattr(obj, field, None)
+        return
+
+    getattr(obj, field).copy_(weight)
 
 
 def network_restore_weights_from_backup(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.MultiheadAttention]):
@@ -272,28 +397,22 @@ def network_restore_weights_from_backup(self: Union[torch.nn.Conv2d, torch.nn.Li
 
     if weights_backup is not None:
         if isinstance(self, torch.nn.MultiheadAttention):
-            self.in_proj_weight.copy_(weights_backup[0])
-            self.out_proj.weight.copy_(weights_backup[1])
+            restore_weights_backup(self, 'in_proj_weight', weights_backup[0])
+            restore_weights_backup(self.out_proj, 'weight', weights_backup[1])
         else:
-            self.weight.copy_(weights_backup)
+            restore_weights_backup(self, 'weight', weights_backup)
 
-    if bias_backup is not None:
-        if isinstance(self, torch.nn.MultiheadAttention):
-            self.out_proj.bias.copy_(bias_backup)
-        else:
-            self.bias.copy_(bias_backup)
+    if isinstance(self, torch.nn.MultiheadAttention):
+        restore_weights_backup(self.out_proj, 'bias', bias_backup)
     else:
-        if isinstance(self, torch.nn.MultiheadAttention):
-            self.out_proj.bias = None
-        else:
-            self.bias = None
+        restore_weights_backup(self, 'bias', bias_backup)
 
 
 def network_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.MultiheadAttention]):
     """
     Applies the currently selected set of networks to the weights of torch layer self.
     If weights already have this particular set of networks applied, does nothing.
-    If not, restores orginal weights from backup and alters weights according to networks.
+    If not, restores original weights from backup and alters weights according to networks.
     """
 
     network_layer_name = getattr(self, 'network_layer_name', None)
@@ -305,24 +424,30 @@ def network_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn
 
     weights_backup = getattr(self, "network_weights_backup", None)
     if weights_backup is None and wanted_names != ():
-        if current_names != ():
-            raise RuntimeError("no backup weights found and current weights are not unchanged")
+        if current_names != () and not allowed_layer_without_weight(self):
+            raise RuntimeError(f"{network_layer_name} - no backup weights found and current weights are not unchanged")
 
         if isinstance(self, torch.nn.MultiheadAttention):
-            weights_backup = (self.in_proj_weight.to(devices.cpu, copy=True), self.out_proj.weight.to(devices.cpu, copy=True))
+            weights_backup = (store_weights_backup(self.in_proj_weight), store_weights_backup(self.out_proj.weight))
         else:
-            weights_backup = self.weight.to(devices.cpu, copy=True)
+            weights_backup = store_weights_backup(self.weight)
 
         self.network_weights_backup = weights_backup
 
     bias_backup = getattr(self, "network_bias_backup", None)
-    if bias_backup is None:
+    if bias_backup is None and wanted_names != ():
         if isinstance(self, torch.nn.MultiheadAttention) and self.out_proj.bias is not None:
-            bias_backup = self.out_proj.bias.to(devices.cpu, copy=True)
+            bias_backup = store_weights_backup(self.out_proj.bias)
         elif getattr(self, 'bias', None) is not None:
-            bias_backup = self.bias.to(devices.cpu, copy=True)
+            bias_backup = store_weights_backup(self.bias)
         else:
             bias_backup = None
+
+        # Unlike weight which always has value, some modules don't have bias.
+        # Only report if bias is not None and current bias are not unchanged.
+        if bias_backup is not None and current_names != ():
+            raise RuntimeError("no backup bias found and current bias are not unchanged")
+
         self.network_bias_backup = bias_backup
 
     if current_names != wanted_names:
@@ -330,21 +455,29 @@ def network_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn
 
         for net in loaded_networks:
             module = net.modules.get(network_layer_name, None)
-            if module is not None and hasattr(self, 'weight'):
+            if module is not None and hasattr(self, 'weight') and not isinstance(module, modules.models.sd3.mmdit.QkvLinear):
                 try:
                     with torch.no_grad():
-                        updown, ex_bias = module.calc_updown(self.weight)
+                        if getattr(self, 'fp16_weight', None) is None:
+                            weight = self.weight
+                            bias = self.bias
+                        else:
+                            weight = self.fp16_weight.clone().to(self.weight.device)
+                            bias = getattr(self, 'fp16_bias', None)
+                            if bias is not None:
+                                bias = bias.clone().to(self.bias.device)
+                        updown, ex_bias = module.calc_updown(weight)
 
-                        if len(self.weight.shape) == 4 and self.weight.shape[1] == 9:
+                        if len(weight.shape) == 4 and weight.shape[1] == 9:
                             # inpainting model. zero pad updown to make channel[1]  4 to 9
                             updown = torch.nn.functional.pad(updown, (0, 0, 0, 0, 0, 5))
 
-                        self.weight += updown
+                        self.weight.copy_((weight.to(dtype=updown.dtype) + updown).to(dtype=self.weight.dtype))
                         if ex_bias is not None and hasattr(self, 'bias'):
                             if self.bias is None:
-                                self.bias = torch.nn.Parameter(ex_bias)
+                                self.bias = torch.nn.Parameter(ex_bias).to(self.weight.dtype)
                             else:
-                                self.bias += ex_bias
+                                self.bias.copy_((bias + ex_bias).to(dtype=self.bias.dtype))
                 except RuntimeError as e:
                     logging.debug(f"Network {net.name} layer {network_layer_name}: {e}")
                     extra_network_lora.errors[net.name] = extra_network_lora.errors.get(net.name, 0) + 1
@@ -359,9 +492,12 @@ def network_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn
             if isinstance(self, torch.nn.MultiheadAttention) and module_q and module_k and module_v and module_out:
                 try:
                     with torch.no_grad():
-                        updown_q, _ = module_q.calc_updown(self.in_proj_weight)
-                        updown_k, _ = module_k.calc_updown(self.in_proj_weight)
-                        updown_v, _ = module_v.calc_updown(self.in_proj_weight)
+                        # Send "real" orig_weight into MHA's lora module
+                        qw, kw, vw = self.in_proj_weight.chunk(3, 0)
+                        updown_q, _ = module_q.calc_updown(qw)
+                        updown_k, _ = module_k.calc_updown(kw)
+                        updown_v, _ = module_v.calc_updown(vw)
+                        del qw, kw, vw
                         updown_qkv = torch.vstack([updown_q, updown_k, updown_v])
                         updown_out, ex_bias = module_out.calc_updown(self.out_proj.weight)
 
@@ -379,6 +515,24 @@ def network_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn
 
                 continue
 
+            if isinstance(self, modules.models.sd3.mmdit.QkvLinear) and module_q and module_k and module_v:
+                try:
+                    with torch.no_grad():
+                        # Send "real" orig_weight into MHA's lora module
+                        qw, kw, vw = self.weight.chunk(3, 0)
+                        updown_q, _ = module_q.calc_updown(qw)
+                        updown_k, _ = module_k.calc_updown(kw)
+                        updown_v, _ = module_v.calc_updown(vw)
+                        del qw, kw, vw
+                        updown_qkv = torch.vstack([updown_q, updown_k, updown_v])
+                        self.weight += updown_qkv
+
+                except RuntimeError as e:
+                    logging.debug(f"Network {net.name} layer {network_layer_name}: {e}")
+                    extra_network_lora.errors[net.name] = extra_network_lora.errors.get(net.name, 0) + 1
+
+                continue
+
             if module is None:
                 continue
 
@@ -388,23 +542,23 @@ def network_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn
         self.network_current_names = wanted_names
 
 
-def network_forward(module, input, original_forward):
+def network_forward(org_module, input, original_forward):
     """
     Old way of applying Lora by executing operations during layer's forward.
     Stacking many loras this way results in big performance degradation.
     """
 
     if len(loaded_networks) == 0:
-        return original_forward(module, input)
+        return original_forward(org_module, input)
 
     input = devices.cond_cast_unet(input)
 
-    network_restore_weights_from_backup(module)
-    network_reset_cached_weight(module)
+    network_restore_weights_from_backup(org_module)
+    network_reset_cached_weight(org_module)
 
-    y = original_forward(module, input)
+    y = original_forward(org_module, input)
 
-    network_layer_name = getattr(module, 'network_layer_name', None)
+    network_layer_name = getattr(org_module, 'network_layer_name', None)
     for lora in loaded_networks:
         module = lora.modules.get(network_layer_name, None)
         if module is None:
@@ -418,6 +572,7 @@ def network_forward(module, input, original_forward):
 def network_reset_cached_weight(self: Union[torch.nn.Conv2d, torch.nn.Linear]):
     self.network_current_names = ()
     self.network_weights_backup = None
+    self.network_bias_backup = None
 
 
 def network_Linear_forward(self, input):
@@ -492,15 +647,7 @@ def network_MultiheadAttention_load_state_dict(self, *args, **kwargs):
     return originals.MultiheadAttention_load_state_dict(self, *args, **kwargs)
 
 
-def list_available_networks():
-    available_networks.clear()
-    available_network_aliases.clear()
-    forbidden_network_aliases.clear()
-    available_network_hash_lookup.clear()
-    forbidden_network_aliases.update({"none": 1, "Addams": 1})
-
-    os.makedirs(shared.cmd_opts.lora_dir, exist_ok=True)
-
+def process_network_files(names: list[str] | None = None):
     candidates = list(shared.walk_files(shared.cmd_opts.lora_dir, allowed_extensions=[".pt", ".ckpt", ".safetensors"]))
     candidates += list(shared.walk_files(shared.cmd_opts.lyco_dir_backcompat, allowed_extensions=[".pt", ".ckpt", ".safetensors"]))
 
@@ -514,8 +661,10 @@ def list_available_networks():
     for filename in candidates:
         if os.path.isdir(filename):
             continue
-
         name = os.path.splitext(os.path.basename(filename))[0]
+        # if names is provided, only load networks with names in the list
+        if names and name not in names:
+            continue
         try:
             entry = network.NetworkOnDisk(name, filename)
         except OSError:  # should catch FileNotFoundError and PermissionError etc.
@@ -529,6 +678,22 @@ def list_available_networks():
 
         available_network_aliases[name] = entry
         available_network_aliases[entry.alias] = entry
+
+
+def update_available_networks_by_names(names: list[str]):
+    process_network_files(names)
+
+
+def list_available_networks():
+    available_networks.clear()
+    available_network_aliases.clear()
+    forbidden_network_aliases.clear()
+    available_network_hash_lookup.clear()
+    forbidden_network_aliases.update({"none": 1, "Addams": 1})
+
+    os.makedirs(shared.cmd_opts.lora_dir, exist_ok=True)
+
+    process_network_files()
 
 
 re_network_name = re.compile(r"(.*)\s*\([0-9a-fA-F]+\)")
@@ -572,6 +737,7 @@ extra_network_lora = None
 available_networks = {}
 available_network_aliases = {}
 loaded_networks = []
+loaded_bundle_embeddings = {}
 networks_in_memory = {}
 available_network_hash_lookup = {}
 forbidden_network_aliases = {}

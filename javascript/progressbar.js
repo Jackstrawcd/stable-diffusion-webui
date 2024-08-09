@@ -45,8 +45,15 @@ function formatTime(secs) {
     }
 }
 
+
+var originalAppTitle = undefined;
+
+onUiLoaded(function() {
+    originalAppTitle = document.title;
+});
+
 function setTitle(progress) {
-    var title = 'Stable Diffusion';
+    var title = originalAppTitle;
 
     if (opts.show_progress_in_title && progress) {
         title = '[' + progress.trim() + '] ' + title;
@@ -69,6 +76,26 @@ function requestProgress(id_task, progressbarContainer, gallery, atEnd, onProgre
     var dateStart = new Date();
     var wasEverActive = false;
     var parentProgressbar = progressbarContainer.parentNode;
+    var wakeLock = null;
+
+    var requestWakeLock = async function() {
+        if (!opts.prevent_screen_sleep_during_generation || wakeLock) return;
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+        } catch (err) {
+            console.error('Wake Lock is not supported.');
+        }
+    };
+
+    var releaseWakeLock = async function() {
+        if (!opts.prevent_screen_sleep_during_generation || !wakeLock) return;
+        try {
+            await wakeLock.release();
+            wakeLock = null;
+        } catch (err) {
+            console.error('Wake Lock release failed', err);
+        }
+    };
 
     var divProgress = document.createElement('div');
     divProgress.className = 'progressDiv';
@@ -82,6 +109,7 @@ function requestProgress(id_task, progressbarContainer, gallery, atEnd, onProgre
     var livePreview = null;
 
     var removeProgressBar = function() {
+        releaseWakeLock();
         if (!divProgress) return;
 
         setTitle("");
@@ -93,6 +121,7 @@ function requestProgress(id_task, progressbarContainer, gallery, atEnd, onProgre
     };
 
     var funProgress = function(id_task) {
+        requestWakeLock();
         request("./internal/progress", {id_task: id_task, live_preview: false}, function(res) {
             if (res.completed) {
                 removeProgressBar();

@@ -26,6 +26,14 @@ function selected_gallery_index() {
     return all_gallery_buttons().findIndex(elem => elem.classList.contains('selected'));
 }
 
+function gallery_container_buttons(gallery_container) {
+    return gradioApp().querySelectorAll(`#${gallery_container} .thumbnail-item.thumbnail-small`);
+}
+
+function selected_gallery_index_id(gallery_container) {
+    return Array.from(gallery_container_buttons(gallery_container)).findIndex(elem => elem.classList.contains('selected'));
+}
+
 function extract_image_from_gallery(gallery) {
     if (gallery.length == 0) {
         return [null];
@@ -119,16 +127,24 @@ function create_submit_args(args) {
     return res;
 }
 
+function setSubmitButtonsVisibility(tabname, showInterrupt, showSkip, showInterrupting) {
+    gradioApp().getElementById(tabname + '_interrupt').style.display = showInterrupt ? "block" : "none";
+    gradioApp().getElementById(tabname + '_skip').style.display = showSkip ? "block" : "none";
+    gradioApp().getElementById(tabname + '_interrupting').style.display = showInterrupting ? "block" : "none";
+}
+
 function showSubmitButtons(tabname, show) {
-    gradioApp().getElementById(tabname + '_interrupt').style.display = show ? "none" : "block";
-    gradioApp().getElementById(tabname + '_skip').style.display = show ? "none" : "block";
+    setSubmitButtonsVisibility(tabname, !show, !show, false);
+}
+
+function showSubmitInterruptingPlaceholder(tabname) {
+    setSubmitButtonsVisibility(tabname, false, true, true);
 }
 
 function showRestoreProgressButton(tabname, show) {
     var button = gradioApp().getElementById(tabname + "_restore_progress");
     if (!button) return;
-
-    button.style.display = show ? "flex" : "none";
+    button.style.setProperty('display', show ? 'flex' : 'none', 'important');
 }
 
 function submit() {
@@ -146,6 +162,14 @@ function submit() {
     var res = create_submit_args(arguments);
 
     res[0] = id;
+
+    return res;
+}
+
+function submit_txt2img_upscale() {
+    var res = submit(...arguments);
+
+    res[2] = selected_gallery_index();
 
     return res;
 }
@@ -170,11 +194,29 @@ function submit_img2img() {
     return res;
 }
 
+function submit_extras() {
+    showSubmitButtons('extras', false);
+
+    var id = randomId();
+
+    requestProgress(id, gradioApp().getElementById('extras_gallery_container'), gradioApp().getElementById('extras_gallery'), function() {
+        showSubmitButtons('extras', true);
+    });
+
+    var res = create_submit_args(arguments);
+
+    res[0] = id;
+
+    console.log(res);
+    return res;
+}
+
 function restoreProgressTxt2img() {
     showRestoreProgressButton("txt2img", false);
     var id = localGet("txt2img_task_id");
 
     if (id) {
+        showSubmitInterruptingPlaceholder('txt2img');
         requestProgress(id, gradioApp().getElementById('txt2img_gallery_container'), gradioApp().getElementById('txt2img_gallery'), function() {
             showSubmitButtons('txt2img', true);
         }, null, 0);
@@ -189,6 +231,7 @@ function restoreProgressImg2img() {
     var id = localGet("img2img_task_id");
 
     if (id) {
+        showSubmitInterruptingPlaceholder('img2img');
         requestProgress(id, gradioApp().getElementById('img2img_gallery_container'), gradioApp().getElementById('img2img_gallery'), function() {
             showSubmitButtons('img2img', true);
         }, null, 0);
@@ -198,9 +241,33 @@ function restoreProgressImg2img() {
 }
 
 
+/**
+ * Configure the width and height elements on `tabname` to accept
+ * pasting of resolutions in the form of "width x height".
+ */
+function setupResolutionPasting(tabname) {
+    var width = gradioApp().querySelector(`#${tabname}_width input[type=number]`);
+    var height = gradioApp().querySelector(`#${tabname}_height input[type=number]`);
+    for (const el of [width, height]) {
+        el.addEventListener('paste', function(event) {
+            var pasteData = event.clipboardData.getData('text/plain');
+            var parsed = pasteData.match(/^\s*(\d+)\D+(\d+)\s*$/);
+            if (parsed) {
+                width.value = parsed[1];
+                height.value = parsed[2];
+                updateInput(width);
+                updateInput(height);
+                event.preventDefault();
+            }
+        });
+    }
+}
+
 onUiLoaded(function() {
     showRestoreProgressButton('txt2img', localGet("txt2img_task_id"));
     showRestoreProgressButton('img2img', localGet("img2img_task_id"));
+    setupResolutionPasting('txt2img');
+    setupResolutionPasting('img2img');
 });
 
 
@@ -240,6 +307,7 @@ onAfterUiUpdate(function() {
     var jsdata = textarea.value;
     opts = JSON.parse(jsdata);
 
+    executeCallbacks(optionsAvailableCallbacks); /*global optionsAvailableCallbacks*/
     executeCallbacks(optionsChangedCallbacks); /*global optionsChangedCallbacks*/
 
     Object.defineProperty(textarea, 'value', {
@@ -261,23 +329,6 @@ onAfterUiUpdate(function() {
     });
 
     json_elem.parentElement.style.display = "none";
-
-    setupTokenCounters();
-
-    var show_all_pages = gradioApp().getElementById('settings_show_all_pages');
-    var settings_tabs = gradioApp().querySelector('#settings div');
-    if (show_all_pages && settings_tabs) {
-        settings_tabs.appendChild(show_all_pages);
-        show_all_pages.onclick = function() {
-            gradioApp().querySelectorAll('#settings > div').forEach(function(elem) {
-                if (elem.id == "settings_tab_licenses") {
-                    return;
-                }
-
-                elem.style.display = "block";
-            });
-        };
-    }
 });
 
 onOptionsChanged(function() {
@@ -295,8 +346,8 @@ onOptionsChanged(function() {
 let txt2img_textarea, img2img_textarea = undefined;
 
 function restart_reload() {
+    document.body.style.backgroundColor = "var(--background-fill-primary)";
     document.body.innerHTML = '<h1 style="font-family:monospace;margin-top:20%;color:lightgray;text-align:center;">Reloading...</h1>';
-
     var requestPing = function() {
         requestGet("./internal/ping", {}, function(data) {
             location.reload();
@@ -365,4 +416,21 @@ function switchWidthHeight(tabname) {
     updateInput(width);
     updateInput(height);
     return [];
+}
+
+
+var onEditTimers = {};
+
+// calls func after afterMs milliseconds has passed since the input elem has been edited by user
+function onEdit(editId, elem, afterMs, func) {
+    var edited = function() {
+        var existingTimer = onEditTimers[editId];
+        if (existingTimer) clearTimeout(existingTimer);
+
+        onEditTimers[editId] = setTimeout(func, afterMs);
+    };
+
+    elem.addEventListener("input", edited);
+
+    return edited;
 }

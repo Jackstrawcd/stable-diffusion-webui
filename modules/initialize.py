@@ -1,5 +1,6 @@
 import importlib
 import logging
+import os
 import sys
 import warnings
 from threading import Thread
@@ -18,6 +19,7 @@ def imports():
     warnings.filterwarnings(action="ignore", category=DeprecationWarning, module="pytorch_lightning")
     warnings.filterwarnings(action="ignore", category=UserWarning, module="torchvision")
 
+    os.environ.setdefault('GRADIO_ANALYTICS_ENABLED', 'False')
     import gradio  # noqa: F401
     startup_timer.record("import gradio")
 
@@ -49,13 +51,11 @@ def check_versions():
 def initialize():
     from modules import initialize_util
     initialize_util.fix_torch_version()
+    initialize_util.fix_pytorch_lightning()
     initialize_util.fix_asyncio_event_loop_policy()
     initialize_util.validate_tls_options()
     initialize_util.configure_sigint_handler()
     initialize_util.configure_opts_onchange()
-
-    from modules import modelloader
-    modelloader.cleanup_models()
 
     from modules import sd_models
     sd_models.setup_model()
@@ -110,7 +110,7 @@ def initialize_rest(*, reload_script_modules=False):
     with startup_timer.subcategory("load scripts"):
         scripts.load_scripts()
 
-    if reload_script_modules:
+    if reload_script_modules and shared.opts.enable_reloading_ui_scripts:
         for module in [module for name, module in sys.modules.items() if name.startswith("modules.ui")]:
             importlib.reload(module)
         startup_timer.record("reload script modules")
@@ -140,19 +140,20 @@ def initialize_rest(*, reload_script_modules=False):
         """
         Accesses shared.sd_model property to load model.
         After it's available, if it has been loaded before this access by some extension,
-        its optimization may be None because the list of optimizaers has neet been filled
+        its optimization may be None because the list of optimizers has not been filled
         by that time, so we apply optimization again.
         """
+        from modules import devices
+        devices.torch_npu_set_device()
 
         shared.sd_model  # noqa: B018
 
         if sd_hijack.current_optimizer is None:
             sd_hijack.apply_optimizations()
 
-        from modules import devices
         devices.first_time_calculation()
-
-    Thread(target=load_model).start()
+    if not shared.cmd_opts.skip_load_model_at_start:
+        Thread(target=load_model).start()
 
     from modules import shared_items
     shared_items.reload_hypernetworks()
