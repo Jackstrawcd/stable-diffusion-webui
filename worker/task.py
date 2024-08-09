@@ -131,7 +131,7 @@ class TaskType(IntEnum):
     OnePress = 8
     ClothesRepair = 9
     ModelCheck = 10
-
+    VideoRendition=11 # 视频转绘
 
 class TaskStatus(IntEnum):
     Waiting = 0
@@ -200,7 +200,8 @@ class TaskProgress(SerializationObj):
         self.task = task
         self._result = None
         self.task_progress = 0
-        self.eta_relative = 60
+        self.eta_relative = 0
+        self.fixed_eta = 0
         self.train = TrainTaskInfo()
         self.preview = None
         self.start_time = time.time()
@@ -238,7 +239,10 @@ class TaskProgress(SerializationObj):
         if self.task_progress > 0:
             time_since_start = time.time() - self.start_time
             eta = (time_since_start / self.task_progress) * 100
-            self.eta_relative = int(eta - time_since_start) + offset
+            eta_relative = int(eta - time_since_start) + offset
+            if self.eta_relative > 0 and eta_relative < self.eta_relative:
+                self.eta_relative = eta_relative
+
         else:
             self.eta_relative = default
         return self.eta_relative

@@ -188,13 +188,17 @@ class ExtraTaskHandler(DumpTaskHandler):
 
     def __init__(self):
         super(ExtraTaskHandler, self).__init__(TaskType.Extra)
+        self.register(
+            (ExtraTaskMinorTaskType.SingleUpscaler, self.__exec_upscaler_task, [SingleUpscalerTask]),
+            (ExtraTaskMinorTaskType.MultiUpscaler, self.__exec_upscaler_task, [MultiUpscalerTask])
+        )
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        minor_type = ExtraTaskMinorTaskType(task.minor_type)
-        if minor_type <= ExtraTaskMinorTaskType.SingleUpscaler:
-            yield from self.__exec_upscaler_task(task, SingleUpscalerTask)
-        elif minor_type == ExtraTaskMinorTaskType.MultiUpscaler:
-            yield from self.__exec_upscaler_task(task, MultiUpscalerTask)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     minor_type = ExtraTaskMinorTaskType(task.minor_type)
+    #     if minor_type <= ExtraTaskMinorTaskType.SingleUpscaler:
+    #         yield from self.__exec_upscaler_task(task, SingleUpscalerTask)
+    #     elif minor_type == ExtraTaskMinorTaskType.MultiUpscaler:
+    #         yield from self.__exec_upscaler_task(task, MultiUpscalerTask)
 
     def __exec_upscaler_task(self, task: Task, cls: typing.Union[type(SingleUpscalerTask), type(MultiUpscalerTask)]):
         p = TaskProgress.new_running(task, "up scale image...")

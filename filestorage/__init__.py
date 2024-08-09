@@ -12,11 +12,23 @@ from loguru import logger
 from filestorage.storage import FileStorage, PrivatizationFileStorage
 from tools.reflection import find_classes
 from urllib.parse import urlparse
-from tools.environment import Env_EndponitKey
+from tools.environment import Env_EndponitKey, get_share_dir
+
+DefaultName = 'default'
+LocalName = 'local'
 
 
-def find_storage_classes_with_env():
-    endpoint = os.getenv(Env_EndponitKey)
+def find_storage_classes_with_env(remoting=None):
+    if remoting and str(remoting).lower().startswith('http'):
+        return PrivatizationFileStorage
+
+    share_dir = get_share_dir()
+    if share_dir and os.path.isdir(share_dir):
+        logger.info(f"local fs, share dir:{share_dir}")
+        endpoint = LocalName
+    else:
+        endpoint = os.getenv(Env_EndponitKey)
+
     if not endpoint:
         logger.warning('[storage] > cannot found storage system config, use local file storage system!!!')
     storages = {}
@@ -29,12 +41,15 @@ def find_storage_classes_with_env():
     if domain and domain in storages:
         return storages[domain]
 
-    return storages.get('default')
+    return storages.get(DefaultName)
 
 
 def get_domain_from_endpoint(endpoint):
     if not endpoint:
-        return 'default'
+        return DefaultName
+    elif endpoint == LocalName:
+        return LocalName
+
     domain = urlparse(endpoint).netloc or endpoint
     array = domain.split('.')
     if len(array) > 2 and array[-1].lower() == 'com':
@@ -42,18 +57,23 @@ def get_domain_from_endpoint(endpoint):
     return domain.lower()
 
 
-def get_local_path(remoting, local, storage_cls=None, progress_callback=None):
+def get_local_path(remoting, local, storage_cls=None, progress_callback=None, with_locker=False,
+                   locker_exp=None, flocker=True):
     if os.path.isfile(local):
         return local
-    storage_cls = storage_cls or find_storage_classes_with_env()
+    storage_cls = storage_cls or find_storage_classes_with_env(remoting)
     with storage_cls() as s:
-        return s.download(remoting, local, progress_callback)
+        if not with_locker:
+            return s.download(remoting, local, progress_callback)
+        else:
+            return s.lock_download(remoting, local, progress_callback, locker_exp, flocker)
 
 
-def batch_download(remoting_loc_pairs: typing.Sequence[typing.Tuple[str, str]], storage_cls=None):
+def batch_download(remoting_loc_pairs: typing.Sequence[typing.Tuple[str, str]], storage_cls=None,
+                   with_locker=False, locker_exp=None, flocker=True):
     storage_cls = storage_cls or find_storage_classes_with_env()
     with storage_cls() as s:
-        return s.multi_download(remoting_loc_pairs)
+        return s.multi_download(remoting_loc_pairs, with_locker, flocker=flocker, locker_exp=locker_exp)
 
 
 def push_local_path(remoting, local, storage_cls=None):

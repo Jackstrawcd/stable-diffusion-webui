@@ -10,14 +10,13 @@ import os.path
 import shutil
 import typing
 import torch
-import psutil
 
 from modules.shared import mem_mon as vram_mon
 from loguru import logger
 from worker.task import Task, TaskStatus, TaskProgress, TrainEpoch
-from sd_scripts.train_network_all import train_with_params
+from sd_scripts.train_network_all_auto import train_with_params, SubProcessKiller
 from .typex import TrainLoraTask
-from .utils import upload_files
+from .utils import upload_files, kill_child_processes
 from worker.task_send import RedisSender
 from multiprocessing import Process
 from trainx.utils import calculate_sha256
@@ -62,7 +61,7 @@ def exec_train_lora_task(task: Task, dump_func: typing.Callable = None):
     logger.info("====================================================")
     p = TaskProgress.new_running(task, 'running', 0)
 
-    def progress_callback(epoch, loss, num_train_epochs):
+    def progress_callback(epoch, loss, num_train_epochs, _):
         print(f">>> update progress, epoch:{epoch},loss:{loss},len:{len(p.train.epoch)}")
         free, total = vram_mon.cuda_mem_get_info()
         logger.info(f'[VRAM] free: {free / 2 ** 30:.3f} GB, total: {total / 2 ** 30:.3f} GB')
@@ -101,7 +100,7 @@ def exec_train_lora_task(task: Task, dump_func: typing.Callable = None):
             hash_file_path = os.path.join(dirname, sha256+ex)
 
             shutil.move(m, hash_file_path)
-            key = upload_files(False, hash_file_path, dirname=f'models/{task.user_id}/Lora')
+            key = upload_files(False, hash_file_path, dirname=f'models/{task.user_id}/Lora', task_id=task.id)
             result['models'].append({
                 'key': key[0] if key else '',
                 'thumbnail_path': cover,
@@ -146,6 +145,9 @@ def do_train_with_process(task: Task,  dump_progress_cb: typing.Callable):
             dump_progress_cb(p)
 
     ok = train_with_params(callback=progress_callback, **kwargs)
+
+    torch_gc()
+
     if ok:
         logger.info("=============>>>> end of train <<<<=============")
         material = train_lora_task.compress_train_material(p.train.format_epoch_log())
@@ -167,7 +169,7 @@ def do_train_with_process(task: Task,  dump_progress_cb: typing.Callable):
             hash_file_path = os.path.join(dirname, sha256 + ex)
 
             shutil.move(m, hash_file_path)
-            key = upload_files(False, hash_file_path, dirname=f'models/{task.user_id}/Lora')
+            key = upload_files(False, hash_file_path, dirname=f'models/{task.user_id}/Lora', task_id=task.id)
             result['models'].append({
                 'key': key[0] if key else '',
                 'hash': sha256,

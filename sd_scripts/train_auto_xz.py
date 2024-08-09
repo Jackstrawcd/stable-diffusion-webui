@@ -1,35 +1,16 @@
+import enum
 import os  # ,sys,re,torch
 import shutil
-
-from PIL import Image, ImageOps
-# import random
 import time
 import tqdm
 from enum import Enum
 import math
+import dlib
 import tempfile
-# import diffusers
-# from diffusers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
-# from diffusers import (
-#     StableDiffusionPipeline,
-#     DDPMScheduler,
-#     EulerAncestralDiscreteScheduler,
-#     DPMSolverMultistepScheduler,
-#     DPMSolverSinglestepScheduler,
-#     LMSDiscreteScheduler,
-#     PNDMScheduler,
-#     DDIMScheduler,
-#     EulerDiscreteScheduler,
-#     HeunDiscreteScheduler,
-#     KDPM2DiscreteScheduler,
-#     KDPM2AncestralDiscreteScheduler,
-# )
 from accelerate import Accelerator
-# from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipeline
-from train_network_all_auto import train_with_params, train_callback
+from train_network_all_auto import train_with_params, SubProcessKiller
 
 # from prompts_generate import txt2img_prompts
-
 from sd_scripts.finetune.tag_images_by_wd14_tagger import get_wd_tagger
 from sd_scripts.finetune.deepbooru import deepbooru
 from sd_scripts.library import autocrop
@@ -39,14 +20,121 @@ from sd_scripts.super_upscaler.super_upscaler import upscaler
 from sd_scripts.library import train_util
 import uuid
 import argparse
-
 import sys
-
-sys.path.append("PaddleSeg/contrib/PP-HumanSeg")
-
+from sd_scripts.GPEN.face_enhancement import FaceEnhancement
 import sd_scripts.library.config_util as config_util
 import sd_scripts.library.custom_train_functions as custom_train_functions
 from sd_scripts.library.fix_photo import mopi
+from sd_scripts.library.face_process_utils import call_face_crop
+from transformers import PreTrainedTokenizerBase, PreTrainedModel
+from sd_scripts.library.transformers_pretrained import ori_tokenizer_from_pretrained, ori_model_from_pretrained
+from sd_scripts.library.face_tool import insightface_main_face
+from modelscope.outputs import OutputKeys
+from modelscope.pipelines import pipeline
+from modelscope.utils.constant import Tasks
+from modelscope import snapshot_download
+
+sys.path.append("sd_scripts/PaddleSeg/contrib/PP-HumanSeg")
+from src.seg_demo import seg_image
+
+
+def patch_tokenizer_base():
+    """ Monkey patch PreTrainedTokenizerBase.from_pretrained to adapt to modelscope hub.
+    """
+    ori_from_pretrained = ori_tokenizer_from_pretrained
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args,
+                        **kwargs):
+        ignore_file_pattern = [r'\w+\.bin', r'\w+\.safetensors']
+        if "use_modelscope" in kwargs:
+            if not os.path.exists(pretrained_model_name_or_path):
+                revision = kwargs.pop('revision', None)
+                model_dir = snapshot_download(
+                    pretrained_model_name_or_path,
+                    revision=revision,
+                    ignore_file_pattern=ignore_file_pattern)
+            else:
+                model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+        else:
+            model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+
+    PreTrainedTokenizerBase.from_pretrained = from_pretrained
+
+
+def patch_model_base():
+    """ Monkey patch PreTrainedModel.from_pretrained to adapt to modelscope hub.
+    """
+    ori_from_pretrained = ori_model_from_pretrained
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args,
+                        **kwargs):
+        ignore_file_pattern = [r'\w+\.safetensors']
+        if "use_modelscope" in kwargs:
+            if not os.path.exists(pretrained_model_name_or_path):
+                revision = kwargs.pop('revision', None)
+                model_dir = snapshot_download(
+                    pretrained_model_name_or_path,
+                    revision=revision,
+                    ignore_file_pattern=ignore_file_pattern)
+            else:
+                model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+        else:
+            model_dir = pretrained_model_name_or_path
+            return ori_from_pretrained(cls, model_dir, *model_args, **kwargs)
+
+    PreTrainedModel.from_pretrained = from_pretrained
+
+
+patch_tokenizer_base()
+patch_model_base()
+
+
+# 面部检测
+def face_detect(image_list):
+    retinaface_detection = pipeline(Tasks.face_detection, "damo/cv_resnet50_face-detection_retinaface",
+                                    model_revision="v2.0.2")
+    head_list = []
+    for index, image in enumerate(image_list):
+        try:
+            h, w, c = np.shape(image)
+
+            retinaface_boxes, retinaface_keypoints, _ = call_face_crop(retinaface_detection, image, 3, prefix="tmp")
+            retinaface_box = retinaface_boxes[0]
+            retinaface_keypoint = retinaface_keypoints[0]
+
+            # get key point
+            retinaface_keypoint = np.reshape(retinaface_keypoint, [5, 2])
+            # get angle
+            x = retinaface_keypoint[0, 0] - retinaface_keypoint[1, 0]
+            y = retinaface_keypoint[0, 1] - retinaface_keypoint[1, 1]
+            angle = 0 if x == 0 else abs(math.atan(y / x) * 180 / math.pi)
+            angle = (90 - angle) / 90
+
+            # face size judge
+            face_width = (retinaface_box[2] - retinaface_box[0])
+            face_height = (retinaface_box[3] - retinaface_box[1])
+            if min(face_width, face_height) < 128:
+                print("Face size in {} is small than 128. Ignore it.".format(image))
+                continue
+
+            # face crop
+            sub_image = image.crop(retinaface_box)
+            # try:
+            #     sub_image = Image.fromarray(cv2.cvtColor(skin_retouching(sub_image)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB))
+            # except Exception as e:
+            #     print("面部修复失败")
+            head_list.append(sub_image)
+
+        except Exception as e:
+            print("面部检测失败")
+    del retinaface_detection
+    return head_list
+
 
 # scheduler:
 SCHEDULER_LINEAR_START = 0.00085
@@ -241,13 +329,20 @@ def save_pic_with_caption(image, index, params: PreprocessParams, existing_capti
     params.subindex += 1
 
 
+class ImageProcessMode(enum.Enum):
+    OnlyBody = 1,
+    OnlyHead = 2,
+    All = 3
+
+
 def image_process(proc_image_input_batch, options, resize_weight=512, resize_height=512, if_res_oribody=False,
-                  model_p=""):
+                  model_p="", mode=ImageProcessMode.All):
     op1, op2, op3, op4, op5, op6, op7 = "抠出头部", "抠出全身", "放大", "镜像", "旋转", "改变尺寸", "磨皮"
 
-    if op1 or op2 in options:
+    load_model = False
+    if op1 in options or op2 in options:
         load_model = True
-
+    print("load_groundingdino_model:", load_model)
     myseg = load_seg_model(load_model, model_p)
 
     sum_list = []
@@ -260,23 +355,25 @@ def image_process(proc_image_input_batch, options, resize_weight=512, resize_hei
         image_process_list.append(image)
         if op1 in options:
             result_list = []
-            for i in image_process_list:
-                seg_head_img = seg_hed(i, myseg)
-                # for j in range(len(seg_head_img)):
-                #     # result_list.append(RGBA_image_BGrepair(seg_head_img[j], 255))
-                #     result_list.append(seg_head_img)
-                result_list += seg_head_img
+            if mode != ImageProcessMode.OnlyBody:
+                for i in image_process_list:
+                    seg_head_img = seg_hed(i, myseg)
+                    # for j in range(len(seg_head_img)):
+                    #     # result_list.append(RGBA_image_BGrepair(seg_head_img[j], 255))
+                    #     result_list.append(seg_head_img)
+                    result_list += seg_head_img
 
             head_image_list += result_list
 
         if op2 in options:
             result_list = []
-            for i in image_process_list:
-                seg_body_img = seg_body(i, myseg)
-                # for j in range(len(seg_body_img)):
-                #     result_list.append(RGBA_image_BGrepair(seg_body_img[j], 255))
+            if mode != ImageProcessMode.OnlyHead:
+                for i in image_process_list:
+                    seg_body_img = seg_body(i, myseg)
+                    # for j in range(len(seg_body_img)):
+                    #     result_list.append(RGBA_image_BGrepair(seg_body_img[j], 255))
 
-                result_list += seg_body_img
+                    result_list += seg_body_img
             # for img_tmp in result_list:
             #     path = add_suffix(os.path.abspath(img.name), '_body')
             #     img_tmp.save(path)
@@ -292,7 +389,8 @@ def image_process(proc_image_input_batch, options, resize_weight=512, resize_hei
                 if i.width * i.height >= 1024 * 1024:
                     result_list.append(i)
                 else:
-                    result_list.append(upscale_process(img=i, model_p=model_p))
+                    h = upscale_process(img=i, model_p=model_p) if mode != ImageProcessMode.OnlyHead else i
+                    result_list.append(h)
             image_process_list = result_list
 
             result_list = []
@@ -300,51 +398,59 @@ def image_process(proc_image_input_batch, options, resize_weight=512, resize_hei
                 if i.width * i.height >= 512 * 512:
                     result_list.append(i)
                 else:
-                    result_list.append(upscale_process(img=i, model_p=model_p))
+                    h = upscale_process(img=i, model_p=model_p) if mode != ImageProcessMode.OnlyBody else i
+                    result_list.append(h)
             head_image_list = result_list
 
         if op4 in options:
             result_list = []
-            for i in image_process_list:
-                result_list.append(mirror_images(i))
-            image_process_list += result_list
-
-            result_list = []
-            for i in head_image_list:
-                result_list.append(mirror_images(i))
-            head_image_list += result_list
+            print('mirror iamges....')
+            if mode != ImageProcessMode.OnlyHead:
+                for i in image_process_list:
+                    h = mirror_images(i)
+                    result_list.append(h)
+                image_process_list += result_list
+            if mode != ImageProcessMode.OnlyBody:
+                result_list = []
+                for i in head_image_list:
+                    h = mirror_images(i)
+                    result_list.append(h)
+                head_image_list += result_list
 
         if op5 in options:
-            result_list = []
-            for i in image_process_list:
-                result_list += rotate_pil_image(i)
-            image_process_list += result_list
-
-            result_list = []
-            for i in head_image_list:
-                result_list += rotate_pil_image(i)
-            head_image_list += result_list
+            if mode != ImageProcessMode.OnlyHead:
+                result_list = []
+                for i in image_process_list:
+                    result_list += rotate_pil_image(i)
+                image_process_list += result_list
+            if mode != ImageProcessMode.OnlyBody:
+                result_list = []
+                for i in head_image_list:
+                    result_list += rotate_pil_image(i)
+                head_image_list += result_list
 
         if op6 in options:
-            result_list = []
-            for i in image_process_list:
-                result_list.append(oversize(i, resize_weight, resize_height))
-            image_process_list = result_list
-
-            result_list = []
-            for i in head_image_list:
-                result_list.append(oversize(i, resize_weight, resize_height))
-            head_image_list = result_list
+            if mode != ImageProcessMode.OnlyHead:
+                result_list = []
+                for i in image_process_list:
+                    result_list.append(oversize(i, resize_weight, resize_height))
+                image_process_list = result_list
+            if mode != ImageProcessMode.OnlyBody:
+                result_list = []
+                for i in head_image_list:
+                    result_list.append(oversize(i, resize_weight, resize_height))
+                head_image_list = result_list
         if op7 in options:
-            result_list = []
-            for i in image_process_list:
-                result_list.append(Image.fromarray(np.uint8(mopi(np.array(i)))))
-            image_process_list = result_list
-
-            result_list = []
-            for i in head_image_list:
-                result_list.append(Image.fromarray(np.uint8(mopi(np.array(i)))))
-            head_image_list = result_list
+            if mode != ImageProcessMode.OnlyHead:
+                result_list = []
+                for i in image_process_list:
+                    result_list.append(Image.fromarray(np.uint8(mopi(np.array(i)))))
+                image_process_list = result_list
+            if mode != ImageProcessMode.OnlyBody:
+                result_list = []
+                for i in head_image_list:
+                    result_list.append(Image.fromarray(np.uint8(mopi(np.array(i)))))
+                head_image_list = result_list
 
         sum_list += image_process_list
         sum_head_image_list += head_image_list
@@ -352,7 +458,8 @@ def image_process(proc_image_input_batch, options, resize_weight=512, resize_hei
     # type_alone = False if tab_proc_index != 0 else True
     # res_path = save_imgprocess_batch(sum_list, proc_image_input_batch)
 
-    myseg.stop()
+    if load_model:
+        myseg.stop()
     return sum_list, sum_head_image_list
 
 
@@ -370,7 +477,13 @@ def get_image_list(directory):
     return image_list
 
 
-def custom_configurable_image_processing(directory, options, resize_weight, resize_height, if_res_oribody, model_p):
+def custom_configurable_image_processing(directory, options, resize_weight, resize_height, if_res_oribody, model_p,
+                                         mode=ImageProcessMode.All):
+    '''
+    mode=1: 只处理身体
+    mode=2: 只处理头部
+    mode=3: 都处理
+    '''
     image_list = get_image_list(directory)
     images = get_image(image_list)
     # proc_image_input_batch = []
@@ -378,18 +491,26 @@ def custom_configurable_image_processing(directory, options, resize_weight, resi
     #         image = RGBA_image_BGrepair(img, 255)
     #         proc_image_input_batch.append(image)
 
-    res_list, head_list = image_process(images, options, resize_weight, resize_height, if_res_oribody, model_p)
+    res_list, head_list = image_process(
+        images, options, resize_weight, resize_height, if_res_oribody, model_p, mode)
 
     return res_list, head_list
 
 
-def save_images_to_temp(images):
-    temp_dir = tempfile.mkdtemp()  # 创建临时目录
+def save_images(images, dirname=None):
+    temp_dir = tempfile.mkdtemp() if not dirname else dirname  # 创建临时目录
     temp_image_paths = []
 
     for image in images:
+        if isinstance(image, str) and os.path.isfile(image):
+            basename = os.path.basename(image)
+            dst = os.path.join(temp_dir, basename)
+            shutil.copy(image, dst)
+            temp_image_paths.append(dst)
+
+            continue
         temp_image_filename = f"temp_image_{uuid.uuid4().hex}.png"  # 使用uuid生成随机文件名
-        temp_image_path = f"{temp_dir}/{temp_image_filename}"  # 构造完整的临时文件路径
+        temp_image_path = os.path.join(temp_dir, temp_image_filename)  # 构造完整的临时文件路径
         image.save(temp_image_path)  # 保存图像到临时路径
         temp_image_paths.append(temp_image_path)
 
@@ -410,7 +531,7 @@ def train_preprocess(process_src, process_dst, process_width, process_height, pr
     if process_caption_deepbooru:
         deepbooru.model.start()
 
-    temp_dir, temp_image_paths = save_images_to_temp(process_src)
+    temp_dir, temp_image_paths = save_images(process_src)
     width = process_width
     height = process_height
     src = os.path.abspath(temp_dir)
@@ -458,9 +579,10 @@ def train_preprocess(process_src, process_dst, process_width, process_height, pr
 
         # if shared.state.interrupted:
         #     break
-        if img.width<512 and img.height<512:  # 对于尺寸不够的图片进行upscale
-            ratio=2
-            img = deepbooru.resize_image(1, img, int(img.width*ratio), int(img.height*ratio),upscaler_name="xyx",models_path=model_path)
+        if img.width < 512 and img.height < 512:  # 对于尺寸不够的图片进行upscale
+            ratio = 2
+            img = deepbooru.resize_image(1, img, int(img.width * ratio), int(img.height * ratio), upscaler_name="xyx",
+                                         models_path=model_path)
 
         if img.height > img.width:
             ratio = (img.width * height) / (img.height * width)
@@ -552,9 +674,6 @@ def train_tagger(train_data_dir, model_dir, trigger_word=None, undesired_tags=No
     return
 
 
-
-
-
 def prepare_accelerator(logging_dir="./logs", log_prefix=None, gradient_accumulation_steps=1, mixed_precision="no"):
     if logging_dir is None:
         logging_dir = None
@@ -585,8 +704,284 @@ def prepare_accelerator(logging_dir="./logs", log_prefix=None, gradient_accumula
     return accelerator, unwrap_model
 
 
+# def seg_face(input_path, output_path, model_path):
+#     # 加载人脸关键点检测器
+#     face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
+#     if not os.path.isfile(face_model):
+#         import requests
+#         print("download shape_predictor_68_face_landmarks.dat from xingzheassert.obs.cn-north-4.myhuaweicloud.com")
+#         resp = requests.get(
+#             'https://xingzheassert.obs.cn-north-4.myhuaweicloud.com/sd-web/resource/face/shape_predictor_68_face_landmarks.dat')
+#         if resp:
+#             dirname = os.path.dirname(face_model)
+#             os.makedirs(dirname, exist_ok=True)
+#             filepath = os.path.join("tmp", 'shape_predictor_68_face_landmarks.dat')
+#             os.makedirs('tmp', exist_ok=True)
+#             chunk_size = 1024
+#
+#             with open(filepath, 'wb') as f:
+#                 for chunk in resp.iter_content(chunk_size=chunk_size):
+#                     if chunk:
+#                         f.write(chunk)
+#
+#             if os.path.isfile(filepath):
+#                 shutil.move(filepath, face_model)
+#
+#     if not os.path.isfile(face_model):
+#         raise OSError(f'cannot found model:{face_model}')
+#     predictor = dlib.shape_predictor(face_model)
+#     os.makedirs(output_path, exist_ok=True)
+#
+#     face_files = []
+#     i = 0
+#     for f in os.listdir(input_path):
+#         fi = os.path.join(input_path, f)
+#         if not os.path.isfile(fi):
+#             continue
+#         i += 1
+#         # 加载图像
+#         image = cv2.imread(fi)
+#
+#         if not isinstance(image, (Image.Image, np.ndarray)): continue
+#
+#         # 将图像转换为灰度图
+#         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+#
+#         # 使用人脸检测器检测人脸
+#         detector = dlib.get_frontal_face_detector()
+#         faces = detector(gray)
+#
+#         # 创建一个与原始图像相同大小的掩膜
+#         mask = np.zeros_like(image)
+#
+#         # 遍历检测到的人脸
+#         # print(len(faces))
+#         if len(faces) != 1:
+#             print(f"cannot detect face:{f}, result:{len(faces)}")
+#             continue
+#         for face in faces:
+#             # 检测人脸关键点
+#             landmarks = predictor(gray, face)
+#
+#             # 提取人脸轮廓
+#             points = []
+#             for n in range(68):
+#                 x = landmarks.part(n).x
+#                 y = landmarks.part(n).y
+#                 points.append((x, y))
+#
+#             # 创建人脸蒙版
+#             hull = cv2.convexHull(np.array(points))
+#             cv2.fillConvexPoly(mask, hull, (255, 255, 255))
+#
+#         # 将蒙版应用到原始图像上
+#         result = cv2.bitwise_and(image, mask)
+#         full = os.path.join(output_path, f)
+#         cv2.imwrite(full, result)
+#         face_files.append(full)
+#         print(f"detect face {f}({i}) ==> ok")
+#     return face_files
+
+
+def seg_face(input_path, output_path, model_path):
+    # 加载人脸关键点检测器
+    face_model = os.path.join(model_path, r"face_detect/shape_predictor_68_face_landmarks.dat")
+    if not os.path.isfile(face_model):
+        import requests
+        print("download shape_predictor_68_face_landmarks.dat from xingzheassert.obs.cn-north-4.myhuaweicloud.com")
+        resp = requests.get(
+            'https://xingzheassert.obs.cn-north-4.myhuaweicloud.com/sd-web/resource/face/shape_predictor_68_face_landmarks.dat')
+        if resp:
+            dirname = os.path.dirname(face_model)
+            os.makedirs(dirname, exist_ok=True)
+            filepath = os.path.join("tmp", 'shape_predictor_68_face_landmarks.dat')
+            os.makedirs('tmp', exist_ok=True)
+            chunk_size = 1024
+
+            with open(filepath, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+
+            if os.path.isfile(filepath):
+                shutil.move(filepath, face_model)
+
+    if not os.path.isfile(face_model):
+        raise OSError(f'cannot found model:{face_model}')
+    predictor = dlib.shape_predictor(face_model)
+    os.makedirs(output_path, exist_ok=True)
+
+    face_files = []
+    i = 0
+    for f in os.listdir(input_path):
+        fi = os.path.join(input_path, f)
+        if not os.path.isfile(fi):
+            continue
+        i += 1
+        # 加载图像
+        image = cv2.imread(fi)
+
+        if not isinstance(image, (Image.Image, np.ndarray)): continue
+
+        # 将图像转换为灰度图
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # 使用人脸检测器检测人脸
+        detector = dlib.get_frontal_face_detector()
+        faces = detector(gray)
+
+        # 遍历检测到的人脸
+        # print(len(faces))
+        if len(faces) != 1:
+            print(f"cannot detect face:{f}, result:{len(faces)}")
+            continue
+
+        white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
+        points = []
+
+        for face in faces:
+            # 检测人脸关键点
+            landmarks = predictor(gray, face)
+
+            # 提取人脸轮廓
+            for n in range(68):
+                x = landmarks.part(n).x
+                y = landmarks.part(n).y
+                points.append((x, y))
+
+            # 创建人脸蒙版
+            hull = cv2.convexHull(np.array(points))
+            cv2.fillConvexPoly(white_background, hull, (0, 0, 0))
+
+        # 将原图像与人脸蒙版相乘，得到抠出人脸后的图像
+        face_image = cv2.bitwise_or(image, white_background)
+
+        # 计算所有点的最小和最大坐标值
+        min_x = min(max(0, point[0]) for point in points)  # 确保最小值不小于0
+        max_x = max(min(image.shape[1], point[0]) for point in points)  # 确保最大值不超过图像宽度
+        min_y = min(max(0, point[1]) for point in points)  # 确保最小值不小于0
+        max_y = max(min(image.shape[0], point[1]) for point in points)
+        cropped_face = face_image[min_y:max_y, min_x:max_x]
+
+        cropped_face_pil = Image.fromarray(cropped_face)
+
+        blank_width = 512
+        blank_height = 512
+        # 创建一个空白图像
+        blank_image = Image.new('RGB', (blank_width, blank_height), color='white')
+
+        width = 300
+        height = 300
+        # 调整尺寸并填充空白
+        cropped_face_resized = ImageOps.pad(cropped_face_pil, (width, height), color='white')
+
+        # 计算将人脸图像放置在空白图像中心的位置
+        center_x = (blank_width - width) // 2
+        center_y = (blank_height - height) // 2
+
+        # 在空白图像上粘贴人脸图像
+        blank_image.paste(cropped_face_resized, (center_x, center_y))
+        blank_image_cv = np.array(blank_image)
+
+        full = os.path.join(output_path, f)
+
+        cv2.imwrite(full, blank_image_cv)
+
+        face_files.append(full)
+        print(f"detect face {f}({i}) ==> ok")
+    return face_files
+
+
 def train_callback(percentage):
     print(percentage)
+
+
+def clean_dir(dirname):
+    if not os.path.isdir(dirname):
+        return
+    print(f"clean dir path:{dirname}")
+    files = [x for x in os.listdir(dirname)]
+
+    for f in files:
+        full_path = os.path.join(dirname, f)
+        try:
+
+            if os.path.isdir(full_path):
+                shutil.rmtree(full_path)
+            else:
+                os.remove(full_path)
+        except Exception as e:
+            print(f'cannot remove file:{e}, path:{full_path}')
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='PP-HumanSeg inference for video')
+    parser.add_argument(
+        "--config",
+        help="The config file of the inference model.",
+        type=str,
+        default="PaddleSeg/contrib/PP-HumanSeg/inference_models/human_pp_humansegv1_server_512x512_inference_model_with_softmax/deploy.yaml",
+        required=False)
+    parser.add_argument(
+        '--img_path', help='The image that to be predicted.', type=str)
+    parser.add_argument(
+        '--video_path', help='Video path for inference', type=str)
+    parser.add_argument(
+        '--bg_img_path',
+        help='Background image path for replacing. If not specified, a white background is used',
+        type=str)
+    parser.add_argument(
+        '--bg_video_path', help='Background video path for replacing', type=str)
+    parser.add_argument(
+        '--save_dir',
+        help='The directory for saving the inference results',
+        type=str,
+        default='./output')
+
+    parser.add_argument(
+        '--vertical_screen',
+        help='The input image is generated by vertical screen, i.e. height is bigger than width.'
+             'For the input image, we assume the width is bigger than the height by default.',
+        action='store_true')
+    parser.add_argument(
+        '--use_post_process', help='Use post process.', action='store_true')
+    parser.add_argument(
+        '--use_optic_flow', help='Use optical flow.', action='store_true')
+    parser.add_argument(
+        '--test_speed',
+        help='Whether to test inference speed',
+        action='store_true')
+    parser.add_argument(
+        '--use_gpu', default=True
+    )
+
+    return parser.parse_args([])
+
+
+def FaceEnhancement_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, default='GPEN-BFR-512', help='GPEN model')
+    parser.add_argument('--task', type=str, default='FaceEnhancement', help='task of GPEN model')
+    parser.add_argument('--key', type=str, default=None, help='key of GPEN model')
+    parser.add_argument('--in_size', type=int, default=512, help='in resolution of GPEN')
+    parser.add_argument('--out_size', type=int, default=None, help='out resolution of GPEN')
+    parser.add_argument('--channel_multiplier', type=int, default=2, help='channel multiplier of GPEN')
+    parser.add_argument('--narrow', type=float, default=1, help='channel narrow scale')
+    parser.add_argument('--alpha', type=float, default=1, help='blending the results')
+    parser.add_argument('--use_sr', action='store_true', help='use sr or not')
+    parser.add_argument('--use_cuda', action='store_true', help='use cuda or not')
+    parser.add_argument('--save_face', action='store_true', help='save face or not')
+    parser.add_argument('--aligned', action='store_true', help='input are aligned faces or not')
+    parser.add_argument('--sr_model', type=str, default='realesrnet', help='SR model')
+    parser.add_argument('--sr_scale', type=int, default=2, help='SR scale')
+    parser.add_argument('--tile_size', type=int, default=0, help='tile size for SR to avoid OOM')
+    parser.add_argument('--indir', type=str, default='examples/imgs', help='input folder')
+    parser.add_argument('--outdir', type=str, default='results/outs-BFR', help='output folder')
+    parser.add_argument('--ext', type=str, default='.jpg', help='extension of output')
+    args = parser.parse_args([])
+    return args
+
 
 
 # 一键训练入口函数
@@ -598,14 +993,15 @@ def train_auto(
         lora_path="",  # 文件夹名字
         general_model_path="",  # 通用路径,
         train_callback=None,  # callback函数
+        only_face=True,  # 只需要脸
         other_args=None  # 预留一个，以备用
 ):
     # 预设参数
     width_train = 512
-    height_train = 768
+    height_train = 512
     width = 512
-    height = 768
-    options = ["抠出头部", "放大", "磨皮"]  # 数据预处理方法 "抠出全身","抠出头部", "放大", "镜像", "旋转", "改变尺寸","磨皮"
+    height = 512
+    # options = ["抠出头部", "磨皮"]  # 数据预处理方法 "抠出全身","抠出头部", "放大", "镜像", "旋转", "改变尺寸","磨皮"
     head_width = 512
     head_height = 512
     trigger_word = ""
@@ -613,35 +1009,182 @@ def train_auto(
     use_wd = os.getenv('WD', '1') == '1'
     # 对于小于15的数据样本，进行数据增强
     images = [x for x in os.listdir(train_data_dir) if os.path.splitext(x)[-1].lower() != ".txt"]
-    if len(images) < 15:
-        options.append("镜像")
 
     # 反推tag默认排除的提示词
     undesired_tags = "blur,blurry,motion blur"  # 待测试五官
 
     # 图片处理后的路径
     dirname = os.path.dirname(train_data_dir)
-    image_list, head_list = custom_configurable_image_processing(train_data_dir, options, width, height,
-                                                                 if_res_oribody=True, model_p=general_model_path)
-    train_dir = os.path.join(dirname, f"{task_id}-preprocess")
-    os.makedirs(train_dir, exist_ok=True)
+
+    # 抠出脸部
+    tmp_face_dir = os.path.join(dirname, f"{task_id}-tmp_face_dir")
+    # seg_face(input_path=train_data_dir, output_path=tmp_face_dir, model_path=general_model_path)
+
+    num_boys = 0
+    num_girls = 0
+    for image in images:
+        image_path = os.path.join(train_data_dir, image)
+        face, fq = insightface_main_face(image_path)
+        print("fq:", fq)
+
+        if fq.gender == 1:
+            num_girls += 1
+        elif fq.gender == 2:
+            num_boys += 1
+
+    if num_boys > num_girls:
+        gender = 2
+    else:
+        gender = 1
+    print("该数据集的性别识别为：", gender)
+    # 脸部图，抠头
+    options = []
+    if gender == 2:
+        options.append("去除背景")
+
+    # 不需要镜像
+    # if len(images) < 15:
+    #     options.append("镜像")
+
+    args = parse_args()
+    if "去除背景" in options:
+        ori_img_list = os.listdir(train_data_dir)
+        for img in ori_img_list:
+            img_path = os.path.join(train_data_dir, img)
+            # print(img_path.split(".")[-2])
+            # out_path = img_path.split(".")[-2] + "_out.png"
+            config_path = os.path.join(general_model_path, "PaddleSeg",
+                                       "inference_models/human_pp_humansegv1_server_512x512_inference_model_with_softmax/deploy.yaml")
+            if not os.path.isfile(config_path):
+                config_path = os.path.join('/data/apksamba/sd/models/', "PaddleSeg",
+                                           "inference_models/human_pp_humansegv1_server_512x512_inference_model_with_softmax/deploy.yaml")
+
+            seg_image(args, config=config_path, img_path=img_path, save_dir=img_path)
+
+    body_list, head_list = custom_configurable_image_processing(
+        train_data_dir, options, head_width, head_height, if_res_oribody=True, model_p=general_model_path)
+    skin_retouching = pipeline(Tasks.skin_retouching, model="damo/cv_unet_skin-retouching")
+
+    # portrait_enhancement = pipeline(Tasks.image_portrait_enhancement, model="damo/cv_gpen_image-portrait-enhancement",
+    #                                 model_revision="v1.0.0")
+    faceEnhancement_args = FaceEnhancement_args()
+    portrait_enhancement = FaceEnhancement(faceEnhancement_args, in_size=faceEnhancement_args.in_size,
+                                           model=faceEnhancement_args.model, use_sr=faceEnhancement_args.use_sr,
+                                           device='cuda' if faceEnhancement_args.use_cuda else 'cpu')
+
+    new_body_list = []
+    new_head_list = []
+    head_list = face_detect(image_list=body_list)
+
+    # 限制的最大尺寸
+    def resize_image(image, max_size=2048):
+        cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        # 获取图像尺寸
+        height, width, _ = cv_img.shape
+
+        # 如果任一边超过限制尺寸
+        if height * width > max_size * max_size:
+            # 计算长边和短边的比例
+            if height > width:
+                scale_factor = max_size / height
+            else:
+                scale_factor = max_size / width
+
+            # 调整尺寸
+            new_height = int(height * scale_factor)
+            new_width = int(width * scale_factor)
+            return cv2.resize(cv_img, (new_width, new_height))
+        return cv_img
+
+    if gender == 2:
+        for body_img in body_list:
+            body_img = resize_image(body_img)
+            body_img = cv2.cvtColor(skin_retouching(body_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
+            new_body_list.append(body_img)
+
+    for head_img in head_list:
+        head_img = resize_image(head_img)
+        head_img = cv2.cvtColor(skin_retouching(head_img)[OutputKeys.OUTPUT_IMG], cv2.COLOR_BGR2RGB)
+        new_head_list.append(head_img)
+
+    del skin_retouching
+
+    enh_body_list = []
+    enh_head_list = []
+    if gender == 2:
+        for body_img in new_body_list:
+            img_out, orig_faces, enhanced_faces = portrait_enhancement.process(body_img,
+                                                                               aligned=faceEnhancement_args.aligned)
+
+            for m, (ef, of) in enumerate(zip(enhanced_faces, orig_faces)):
+                of = cv2.resize(of, ef.shape[:2])
+                ef = cv2.cvtColor(ef, cv2.COLOR_BGR2RGB)
+            # body_img = Image.fromarray(
+            #     cv2.cvtColor(enhanced_faces, cv2.COLOR_BGR2RGB))
+            body_img = Image.fromarray(body_img)
+            enh_body_list.append(body_img)
+
+    for head_img in new_head_list:
+        img_out, orig_faces, enhanced_faces = portrait_enhancement.process(head_img,
+                                                                           aligned=faceEnhancement_args.aligned)
+
+        for m, (ef, of) in enumerate(zip(enhanced_faces, orig_faces)):
+            of = cv2.resize(of, ef.shape[:2])
+            ef = cv2.cvtColor(ef, cv2.COLOR_BGR2RGB)
+
+        # head_img = Image.fromarray(
+        #     cv2.cvtColor(enhanced_faces, cv2.COLOR_BGR2RGB))
+        head_img = Image.fromarray(head_img)
+        enh_head_list.append(head_img)
+
+    del portrait_enhancement
+
+    import torch
+    torch.set_grad_enabled(True)
+
+    # # 抠出脸部
+    # if only_face:
+    clean_dir(train_data_dir)
+    # save_images_to_temp(head_list, train_data_dir)
+    save_images(enh_head_list, train_data_dir)
+    face_list = seg_face(input_path=train_data_dir, output_path=tmp_face_dir, model_path=general_model_path)
+
+    tmp_dir = os.path.join(dirname, f"{task_id}-preprocess") if not only_face else tmp_face_dir
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    train_dir = tmp_dir + "_train"
     process_dir = train_dir
     # print("1111:::", image_list, head_list)
 
-    # 1.图片预处理
-    train_preprocess(process_src=image_list, process_dst=train_dir, process_width=width, process_height=height,
-                     preprocess_txt_action='ignore', process_keep_original_size=False,
-                     process_split=False, process_flip=False, process_caption=True,
-                     process_caption_deepbooru=not use_wd, split_threshold=0.5,
-                     overlap_ratio=0.2, process_focal_crop=True, process_focal_crop_face_weight=0.9,
-                     process_focal_crop_entropy_weight=0.3, process_focal_crop_edges_weight=0.5,
-                     process_focal_crop_debug=False, process_multicrop=None, process_multicrop_mindim=None,
-                     process_multicrop_maxdim=None, process_multicrop_minarea=None, process_multicrop_maxarea=None,
-                     process_multicrop_objective=None, process_multicrop_threshold=None, progress_cb=None,
-                     model_path=general_model_path,
-                     filter_tags=undesired_tags, additional_tags=trigger_word)
+    if gender == 2:
+        # # 1.图片预处理
+        # train_preprocess(process_src=new_body_list, process_dst=train_dir, process_width=width, process_height=height,
+        #                  preprocess_txt_action='ignore', process_keep_original_size=False,
+        #                  process_split=False, process_flip=False, process_caption=True,
+        #                  process_caption_deepbooru=not use_wd, split_threshold=0.5,
+        #                  overlap_ratio=0.2, process_focal_crop=True, process_focal_crop_face_weight=0.9,
+        #                  process_focal_crop_entropy_weight=0.3, process_focal_crop_edges_weight=0.5,
+        #                  process_focal_crop_debug=False, process_multicrop=None, process_multicrop_mindim=None,
+        #                  process_multicrop_maxdim=None, process_multicrop_minarea=None, process_multicrop_maxarea=None,
+        #                  process_multicrop_objective=None, process_multicrop_threshold=None, progress_cb=None,
+        #                  model_path=general_model_path,
+        #                  filter_tags=undesired_tags, additional_tags=trigger_word)
 
-    train_preprocess(process_src=head_list, process_dst=train_dir, process_width=head_width, process_height=head_height,
+        train_preprocess(process_src=enh_head_list, process_dst=train_dir, process_width=head_width,
+                         process_height=head_height,
+                         preprocess_txt_action='ignore', process_keep_original_size=False,
+                         process_split=False, process_flip=False, process_caption=True,
+                         process_caption_deepbooru=not use_wd, split_threshold=0.5,
+                         overlap_ratio=0.2, process_focal_crop=True, process_focal_crop_face_weight=0.9,
+                         process_focal_crop_entropy_weight=0.3, process_focal_crop_edges_weight=0.5,
+                         process_focal_crop_debug=False, process_multicrop=None, process_multicrop_mindim=None,
+                         process_multicrop_maxdim=None, process_multicrop_minarea=None, process_multicrop_maxarea=None,
+                         process_multicrop_objective=None, process_multicrop_threshold=None, progress_cb=None,
+                         model_path=general_model_path,
+                         filter_tags=undesired_tags, additional_tags=trigger_word)
+
+    train_preprocess(process_src=face_list, process_dst=train_dir, process_width=width_train,
+                     process_height=height_train,
                      preprocess_txt_action='ignore', process_keep_original_size=False,
                      process_split=False, process_flip=False, process_caption=True,
                      process_caption_deepbooru=not use_wd, split_threshold=0.5,
@@ -652,7 +1195,7 @@ def train_auto(
                      process_multicrop_objective=None, process_multicrop_threshold=None, progress_cb=None,
                      model_path=general_model_path,
                      filter_tags=undesired_tags, additional_tags=trigger_word)
-    train_callback(2)
+    train_callback(0, 0, 0, 2)
 
     if use_wd and os.getenv("DO_NOT_TRAIN_COPY_ORIGIN", "1") != "1":
         for f in os.listdir(train_dir):
@@ -666,11 +1209,17 @@ def train_auto(
         pic_nums = len(contents)
 
     else:
-        pic_nums = len(contents) / 2
+        pic_nums = len(contents) // 2
 
-    max_repeats = 40
-    repeats_n = min(int(20 * max_repeats / pic_nums), max_repeats)
+    if pic_nums == 0:
+        raise ValueError("No data: the empty dataset could be due to failure in correctly identifying the person, "
+                        "presence of multiple individuals in the image, low recognition accuracy, "
+                        "or non-human subjects")
 
+    # max_repeats = 30
+    # min_repeats = 15
+    # repeats_n = max(min(int(20 * max_repeats / pic_nums), max_repeats), min_repeats)
+    # repeats_n = 30
     # 2.tagger反推
     if use_wd:
         onnx = os.path.join(general_model_path, "tag_models/wd_onnx")
@@ -687,24 +1236,12 @@ def train_auto(
         )
 
         if callable(train_callback):
-            train_callback(4)
+            train_callback(0, 0, 0, 4)
 
     lora_name = f"{task_id}"
 
     # 判断性别
-    girl_count, man_count = 0, 0
-    for f in os.listdir(process_dir):
-        full = os.path.join(process_dir, f)
-        _, ex = os.path.splitext(f)
-        if ex.lower().lstrip('.') == 'txt':
-            with open(full) as f:
-                tags = ' '.join(f.readlines()).lower()
-                if 'girl' in tags:
-                    girl_count += 1
-                elif 'boy' in tags:
-                    man_count += 1
-
-    gender = '1girl' if girl_count > man_count else '1boy'
+    gender = '1girl' if num_boys > num_girls else '1boy'
     print(f">>>>>> gender:{gender}")
 
     # 3.自动训练出图
@@ -718,10 +1255,10 @@ def train_auto(
         trigger_words=[""],  # [f"{task_id}",f"{task_id}"],
         list_train_data_dir=[process_dir],
         save_model_as="safetensors",
-        num_repeats=[f"{repeats_n}"],
-        batch_size=24,
+        num_repeats=[f"{1}"],
+        batch_size=1,
         resolution=f"{width_train},{height_train}",
-        epoch=10,  # 整数，随便填
+        epoch=3000 // (len(os.listdir(train_dir))//2),  # 整数，随便填
         network_module="networks.lora",
         network_train_unet_only=False,
         network_train_text_encoder_only=False,
@@ -735,10 +1272,9 @@ def train_auto(
         learning_rate=0.0001,
         unet_lr=0.0001,
         text_encoder_lr=0.00001,
-        lr_scheduler="cosine_with_restarts",
+        lr_scheduler="cosine",
         auto_lr=True,
         auto_lr_param=6,
-
         cache_latents=True,
         # cache latents to main memory to reduce VRAM usage (augmentations must be disabled)
         cache_latents_to_disk=False,
@@ -750,7 +1286,6 @@ def train_auto(
         bucket_no_upscale=True,  # 秋叶版没有这个,make bucket for each image without upscaling
         token_warmup_min=1,  # 秋叶版没有这个,start learning at N tags (token means comma separated strinfloatgs)
         token_warmup_step=0,  # 秋叶版没有这个,tag length reaches maximum on N steps (or N*max_train_steps if N<1)
-
         caption_extension=".txt",
         caption_dropout_rate=0.0,  # Rate out dropout caption(0.0~1.0)
         caption_dropout_every_n_epochs=0,  # Dropout all captions every N epochs
@@ -765,7 +1300,6 @@ def train_auto(
         # 秋叶版没有这个,enable face-centered crop augmentation and its range (e.g. 2.0,4.0)
         random_crop=False,
         # 秋叶版没有这个,enable random crop (for style training in face-centered crop augmentation)
-
         lowram=False,
         # enable low RAM optimization. e.g. load models to VRAM instead of RAM (for machines which have bigger VRAM than RAM such as Colab and Kaggle)
         mem_eff_attn=False,  # use memory efficient attention for CrossAttention
@@ -775,17 +1309,14 @@ def train_auto(
         # 秋叶版没有这个,max num workers for DataLoader (lower is less main RAM usage, faster epoch start and slower data loading)
         persistent_data_loader_workers=True,
         # persistent DataLoader workers (useful for reduce time gap between epoch, but may use more memory)
-
         max_train_steps=1600,  # 秋叶版没有这个,
         gradient_checkpointing=True,
         gradient_accumulation_steps=1,
         # 整数，随便填, Number of updates steps to accumulate before performing a backward/update pass
         mixed_precision="no",  # 是否使用混精度
         full_fp16=True,  # fp16 training including gradients
-
         # ["ddim","pndm","lms","euler","euler_a","heun","dpm_2","dpm_2_a","dpmsolver","dpmsolver++","dpmsingle","k_lms","k_euler","k_euler_a","k_dpm_2","k_dpm_2_a",]
         sample_every_n_epochs=None,  # 1,2,3,4,5.....
-
         # network额外参数
         conv_dim=None,  # 默认为None，可以填4的倍数，类似于network_dim,
         # lycoris才有，# 4的倍数, 适用于lora,dylora。如果是dylora,则"conv_dim must be same as network_dim",
@@ -793,7 +1324,6 @@ def train_auto(
         unit=8,  # 秋叶版没有
         dropout=0,  # dropout 概率, 0 为不使用 dropout, 越大则 dropout 越多，推荐 0~0.5， LoHa/LoKr/(IA)^3暂时不支持
         algo='lora',  # 可选['lora','loha','lokr','ia3']
-
         enable_block_weights=False,  # 让下面几个参数有效
         block_dims=None,  # lora,  类似于network_dim,
         block_alphas=None,  # lora,默认为None，可以填比con_dim小的整数，类似于network_alpha
@@ -803,18 +1333,14 @@ def train_auto(
         mid_lr_weight=None,  # lora, 1位float,例如 1.0；
         up_lr_weight=None,  # lora, 12位的float List，例如[1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0]
         block_lr_zero_threshold=0.0,  # float型，分层学习率置 0 阈值
-
         # AdamW (default), AdamW8bit, Lion8bit, Lion, SGDNesterov, SGDNesterov8bit, DAdaptation(DAdaptAdam), DAdaptAdaGrad, DAdaptAdan, DAdaptSGD, AdaFactor
         weight_decay=0.01,  # optimizer_args,优化器内部的参数，权重衰减系数，不建议随便改
         betas=0.9,  # optimizer_args,优化器内部的参数，不建议随便改
-
         max_grad_norm=1.0,  # Max gradient norm, 0 for no clipping
-
         # linear, cosine, cosine_with_restarts, polynomial, constant (default), constant_with_warmup, adafactor
         lr_scheduler_num_cycles=1,  # Number of restarts for cosine scheduler with restarts
         lr_warmup_steps=0,  # Number of steps for the warmup in the lr scheduler
         lr_scheduler_power=1,  # Polynomial power for polynomial scheduler
-
         seed=918699631,
         prior_loss_weight=1.0,  # loss weight for regularization images
         min_snr_gamma=None,  # float型，比如5.0，最小信噪比伽马值，如果启用推荐为 5
@@ -823,7 +1349,6 @@ def train_auto(
         # 与noise_offset配套使用；add `latent mean absolute value * this value` to noise_offset (disabled if None, default)
         multires_noise_iterations=6,  # 整数，多分辨率（金字塔）噪声迭代次数 推荐 6-10。无法与 noise_offset 一同启用。
         multires_noise_discount=0.3,  # 多分辨率（金字塔）噪声衰减率 推荐 6-10。无法与 noise_offset 一同启用。
-
         config_file=None,  # "test_config.toml",  # using .toml instead of args to pass hyperparameter
         output_config=False,  # output command line args to given .toml file
         # accelerator=accelerator,
@@ -831,24 +1356,30 @@ def train_auto(
         callback=train_callback,
     )
 
+    try:
+        shutil.rmtree(tmp_face_dir)
+    except:
+        pass
+
     return os.path.join(lora_path, lora_name + ".safetensors"), gender
 
-#MODEL_PATH = "/data/qll/stable-diffusion-webui/models/Stable-diffusion/AWPortrait_v1.2.safetensors"
-#PIC_SAVE_PATH = "/data/qll/pics/yijian_sanciyuan_train"
-#LORA_PATH = "/data/qll/stable-diffusion-webui/models/Lora"
-# model_p = "/data/qll/stable-diffusion-webui/models"
-# trigger_word = f"liuxiangxzai"
-# undesired_tags = ""  # 待测试五官
-# train_data_dir = "/moba_expert_data/qll/pics/liuxiang"
-# for i in range(3):
-#    train_auto(
-#        train_data_dir=train_data_dir,  # 训练的图片路径
-#        train_type=0,  # 训练的类别
-#        task_id="test",   # 任务id,作为Lora名称
-#        sd_model_path=MODEL_PATH, # 底模路径
-#        lora_path=LORA_PATH, # 文件夹名字
-#        general_model_path=model_p, # 通用路径,
-#        train_callback=train_callback, # callback函数
-#        other_args=None # 预留一个，以备用
-#    )
 
+if __name__ == "__main__":
+    MODEL_PATH = "/data/qll/stable-diffusion-webui/models/Stable-diffusion/Realistic_Vision_V2.0.safetensors"
+    PIC_SAVE_PATH = "/data/qll/pics/yijian_sanciyuan_train"
+    LORA_PATH = "/data/qll/stable-diffusion-webui/models/Lora"
+    model_p = "/data/qll/stable-diffusion-webui/models"
+    trigger_word = f""
+    undesired_tags = ""  # 待测试五官
+    train_data_dir = "/root/qll/pics/shuqi"
+    for i in range(1):
+        train_auto(
+            train_data_dir=train_data_dir,  # 训练的图片路径
+            train_type=0,  # 训练的类别
+            task_id="test_new",  # 任务id,作为Lora名称
+            sd_model_path=MODEL_PATH,  # 底模路径
+            lora_path=LORA_PATH,  # 文件夹名字
+            general_model_path=model_p,  # 通用路径,
+            train_callback=train_callback,  # callback函数
+            other_args=None  # 预留一个，以备用
+        )

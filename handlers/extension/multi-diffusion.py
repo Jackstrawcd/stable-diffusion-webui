@@ -8,8 +8,8 @@
 import typing
 from handlers.formatter import AlwaysonScriptArgsFormatter
 
-Multidiffusion = "Tiled-Diffusion"
-TiledVAE = 'Tiled-VAE'
+Multidiffusion = "Tiled_Diffusion"
+TiledVAE = 'Tiled_VAE'
 
 
 class MultiDiffusionFormatter(AlwaysonScriptArgsFormatter):
@@ -21,18 +21,25 @@ class MultiDiffusionFormatter(AlwaysonScriptArgsFormatter):
             -> typing.Sequence[typing.Any]:
         def obj_to_array(obj: typing.Mapping) -> typing.Sequence:
             # 如果是[OBJ1, OBJ2]形式的，需要转换为ARRAY
+            #  enabled, method,
+            #             overwrite_size, keep_input_size, image_width, image_height,
+            #             tile_width, tile_height, overlap, batch_size,
+            #             upscaler_name, scale_factor,
+            #             noise_inverse, noise_inverse_steps, noise_inverse_retouch, noise_inverse_renoise_strength, noise_inverse_renoise_kernel,
+            #             control_tensor_cpu,
+            #             enable_bbox_control, draw_background, causal_layers,
             if isinstance(obj, dict):
                 array = [
-                    obj['enabled'],
-                    obj['method'],
+                    obj.get('enabled', False),
+                    obj.get('method', ""),
                     obj.get('overwrite_size', False),
-                    obj['keep_input_size'],
-                    obj['image_width'],
-                    obj['image_height'],
-                    obj['tile_width'],
-                    obj['tile_height'],
-                    obj['overlap'],
-                    obj['batch_size'],
+                    obj.get('keep_input_size', 0),
+                    obj.get('image_width', 0),
+                    obj.get('image_height', 0),
+                    obj.get('tile_width', 0),
+                    obj.get('tile_height', 0),
+                    obj.get('overlap', 0),
+                    obj.get('batch_size', 0),
                     obj.get('upscaler') or obj.get('upscaler_name'),
                     obj['scale_factor'],
                     obj['noise_inverse'],
@@ -48,6 +55,7 @@ class MultiDiffusionFormatter(AlwaysonScriptArgsFormatter):
                 controls = obj['controls']
                 if len(controls) > 8:
                     raise ValueError('region length err')
+                # e, x, y, w, h, prompt, neg_prompt, blend_mode, feather_ratio, seed
                 for ctl in controls:
                     array.extend([
                         ctl['enable'],

@@ -9,10 +9,12 @@ from worker.task import TaskType, TaskProgress, Task, TaskStatus, SerializationO
 from loguru import logger
 from enum import IntEnum
 from modules.sd_models import CheckpointInfo
+from modules.hashes import calculate_sha256
 from handlers.typex import ModelType
 
 
 class SdModelVer(IntEnum):
+    Unknown = -1
     SD15 = 1
     SDXL = 2
 
@@ -25,23 +27,23 @@ class CheckResult(SerializationObj):
         self.model_type = model_type
 
 
-# def load_pt_file(file):
-#     state_dict = torch.load(file, map_location="cpu")
-#     return state_dict
-#
-#
-# def load_ckpt_file(file):
-#     checkpoint = torch.load(file, map_location="cpu")
-#     state_dict = checkpoint['state_dict']
-#     return state_dict
-#
-#
-# def load_safetensors_file(file):
-#     sd = load_file(file)
-#     return sd
+def load_pt_file(file):
+    state_dict = torch.load(file, map_location="cpu")
+    return state_dict
 
 
-def base_model_version(keys, lora_modules_num, all_modules_num, hada_modules_num, kronecker_modules_num) -> typing.Optional[CheckResult]:
+def load_ckpt_file(file):
+    checkpoint = torch.load(file, map_location="cpu")
+    state_dict = checkpoint['state_dict']
+    return state_dict
+
+
+def load_safetensors_file(file):
+    sd = load_file(file)
+    return sd
+
+
+def base_model_version(keys, lora_modules_num, all_modules_num) -> typing.Optional[CheckResult]:
     first_stage_count = 0
     cond_stage_count = 0
     diffusion_model_count = 0
@@ -79,30 +81,17 @@ def base_model_version(keys, lora_modules_num, all_modules_num, hada_modules_num
     #     res = CheckResult(SdModelVer.SDXL, ModelType.VAE)
     #     logger.debug("该模型为sdxl的vae")
     # # todo: 是否缺失1.5版本VAE
+    elif cond_stage_count == 0 and conditioner_stage_count == 0 and diffusion_model_count != 0:
+        res = CheckResult(SdModelVer.SD15)
+        logger.debug("该模型为sd1.5的底膜")
     elif first_stage_count == 0:
         if lora_modules_num != 0:
-            if lora_modules_num <= 1750 and hada_modules_num != 0:
-                res = CheckResult(SdModelVer.SD15, ModelType.Lora)
-                logger.debug("该模型为基于sd1.5 loha模型")
-            elif lora_modules_num <= 1117 and kronecker_modules_num != 0:
-                res = CheckResult(SdModelVer.SD15, ModelType.Lora)
-                logger.debug("该模型为基于sd1.5 lokr模型")
-            elif lora_modules_num <= 1050 and hada_modules_num == 0 and kronecker_modules_num == 0:
+            if lora_modules_num <= 1050:
                 res = CheckResult(SdModelVer.SD15, ModelType.Lora)
                 logger.debug("该模型为基于sd1.5 lora模型")
-            elif lora_modules_num > 1750 and hada_modules_num != 0:
-                res = CheckResult(SdModelVer.SDXL, ModelType.Lora)
-                logger.debug("该模型为基于XL loha模型")
-            elif lora_modules_num > 1117 and kronecker_modules_num != 0:
-                res = CheckResult(SdModelVer.SDXL, ModelType.Lora)
-                logger.debug("该模型为基于XL lokr模型")
-            elif lora_modules_num > 1050 and hada_modules_num == 0 and kronecker_modules_num == 0:
+            elif lora_modules_num > 1050:
                 res = CheckResult(SdModelVer.SDXL, ModelType.Lora)
                 logger.debug("该模型为基于XL lora模型")
-            elif lora_modules_num <= 232 and hada_modules_num == 0 and kronecker_modules_num == 0:
-                res = CheckResult(SdModelVer.SD15, ModelType.Lora)
-                logger.debug("该模型为基于sd1.5 lora模型")
-
         else:
             if all_modules_num == 6:
                 res = CheckResult(SdModelVer.SD15, ModelType.Embedding)
@@ -112,6 +101,7 @@ def base_model_version(keys, lora_modules_num, all_modules_num, hada_modules_num
                 logger.debug("该模型为基于sdxl的embedding")
     else:
         logger.debug("该模型为未知模型")
+        res = CheckResult(SdModelVer.Unknown, ModelType.Unknown)
     return res
 
 
@@ -150,23 +140,14 @@ class ModelCheckTaskHandler(Txt2ImgTaskHandler):
             logger.info(f"loading: {base_model}")
             ex = os.path.splitext(base_model)[-1].lower()
 
-            # if ex == ".safetensors":
-            #     sd = load_safetensors_file(base_model)
-            # elif ex == ".ckpt":
-            #     sd = load_ckpt_file(base_model)
-            # elif ex == ".pt":
-            #     sd = load_pt_file(base_model)
-            # else:
-            #     raise Exception("unknown file type")
-
             if ex == ".safetensors":
-                sd = load_file(base_model)
+                sd = load_safetensors_file(base_model)
+            elif ex == ".ckpt":
+                sd = load_ckpt_file(base_model)
+            elif ex == ".pt":
+                sd = load_pt_file(base_model)
             else:
-                sd = torch.load(base_model, map_location="cpu")
-                if "state_dict" in sd:
-                    sd = sd["state_dict"]
-                else:
-                    sd = sd
+                raise Exception("unknown file type")
 
         except Exception as e:
             task_desc = f'"无法识别的文件名后缀或模型无法正常加载" {e}'
@@ -179,35 +160,34 @@ class ModelCheckTaskHandler(Txt2ImgTaskHandler):
             keys = list(sd.keys())
 
             for key in keys:
-                if "lora" in key:
+                if str(key).startswith('lora_'):
                     values.append((key, sd[key]))
             lora_modules_num = len(values)
             logger.info(f"number of LoRA modules: {lora_modules_num}")
-
-            hada_list = []
-            for key in keys:
-                if "hada" in key:
-                    hada_list.append((key, sd[key]))
-            hada_modules_num = len(hada_list)
-            print(f"number of Hada modules: {hada_modules_num}")
-
-            kronecker_list = []
-            for key in keys:
-                if "lokr" in key:
-                    kronecker_list.append((key, sd[key]))
-            kronecker_modules_num = len(kronecker_list)
-            print(f"number of LoKr modules: {kronecker_modules_num}")
 
             for key in [k for k in keys if k not in values]:
                 values.append((key, sd[key]))
             all_modules_num = len(values)
             logger.info(f"number of all modules: {all_modules_num}")
 
-            r = base_model_version(keys, lora_modules_num, all_modules_num, hada_modules_num, kronecker_modules_num)
-            result = r.to_dict() if r else {}
+            r = base_model_version(keys, lora_modules_num, all_modules_num)
+            if r and r.model_type == ModelType.Unknown:
+                progress = TaskProgress.new_failed(task, "未能识别")
+                yield progress
+            else:
+                # model
+                # model_hash = calculate_sha256(base_model)
+                model_hash = model_info.sha256
+                # 添加模型计算HASH
+                result = r.to_dict() if r else {}
+                result.update({
+                    'sha256': model_hash,
+                    'short_hash': model_hash[:10],
+                    'meta': model_info.metadata
+                })
+                progress.set_finish_result(result)
+                yield progress
 
-            progress.set_finish_result(result)
-            yield progress
         except Exception as e:
             task_desc = f'"模型正常加载但是检测失败了" {e}'
             progress = TaskProgress.new_failed(task, task_desc, traceback.format_exc())

@@ -8,14 +8,13 @@
 import hashlib
 import os
 import cv2
-import numpy as np
-from PIL import Image
+import psutil
 from enum import IntEnum
 from loguru import logger
-from worker.task_recv import Tmp
+from tools import TempDir as Tmp
 from datetime import datetime
 from insightface.app import FaceAnalysis
-from tools.environment import S3Tmp, S3SDWEB
+from tools.environment import S3Tmp, S3SDWEB, enable_download_locker
 from filestorage import FileStorageCls, get_local_path, batch_download, http_down
 
 
@@ -64,8 +63,8 @@ def get_model_local_path(remoting_path: str, model_type: ModelType):
     dst = os.path.join(ModelLocation[model_type], os.path.basename(remoting_path))
     if os.path.isfile(dst):
         return dst
-
-    dst = get_local_path(remoting_path, dst)
+    with_locker = enable_download_locker()
+    dst = get_local_path(remoting_path, dst, with_locker=with_locker)
     if os.path.isfile(dst):
         # if model_type == ModelType.CheckPoint:
         #     checkpoint = CheckpointInfo(dst)
@@ -82,10 +81,10 @@ def get_tmp_local_path(remoting_path: str, dir=None):
     dirname = Tmp if not dir else dir
     os.makedirs(dirname, exist_ok=True)
     dst = os.path.join(dirname, os.path.basename(remoting_path))
-    return get_local_path(remoting_path, dst)
+    return get_local_path(remoting_path, dst, with_locker=False)
 
 
-def upload_files(is_tmp, *files, dirname=None):
+def upload_files(is_tmp, *files, dirname=None, task_id=None):
     keys = []
     if files:
         date = datetime.today().strftime('%Y/%m/%d')
@@ -97,6 +96,8 @@ def upload_files(is_tmp, *files, dirname=None):
 
         for f in files:
             name = os.path.basename(f)
+            if task_id:
+                name = os.path.join(task_id, name)
             key = os.path.join(relative, date, name)
             file_storage_system.upload(f, key)
             keys.append(key)
@@ -126,10 +127,24 @@ def detect_image_face(*images):
     app = FaceAnalysis(providers=['CUDAExecutionProvider', 'CPUExecutionProvider'], root='.')
     app.prepare(ctx_id=0, det_size=(640, 640))
     for img_path in images:
-        img = cv2.imread(img_path)
-        faces = app.get(img)
-        basename = os.path.basename(img_path)
-        if not faces:
-            yield (basename, None)
-        else:
-            yield (basename, faces[0])
+        if img_path and os.path.isfile(img_path):
+            try:
+                img = cv2.imread(img_path)
+                faces = app.get(img)
+                basename = os.path.basename(img_path)
+                if not faces:
+                    yield (basename, None)
+                else:
+                    yield (basename, faces[0])
+            except:
+                continue
+
+
+def kill_child_processes():
+    init_process = psutil.Process()
+    children = init_process.children()
+
+    # 处理子进程
+    for child in children:
+        logger.debug(f"sub process kill:{child.pid}, name:{child.name()}(test only)")
+        child.kill()

@@ -113,11 +113,13 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
                  lora_models: typing.Sequence[str] = None,  # 使用LORA，用户和系统全部LORA列表
                  embeddings: typing.Sequence[str] = None,  # embeddings，用户和系统全部embedding列表
                  lycoris_models: typing.Sequence[str] = None,  # lycoris，用户和系统全部lycoris列表
-                 disable_ad_face: bool = False,  # 关闭默认的ADetailer face
+                 disable_ad_face: bool = True,  # 关闭默认的ADetailer face
                  enable_refiner: bool = False,  # 是否启用XLRefiner
                  refiner_switch_at: float = 0.2,  # XL 精描切换时机
                  refiner_checkpoint: str = None,  # XL refiner模型文件
                  **kwargs):
+        # fast模式下关闭默认的AD插件
+        disable_ad_face = disable_ad_face or kwargs.get('is_fast', True)
         override_settings_texts = format_override_settings(override_settings_texts)
         override_settings = create_override_settings_dict(override_settings_texts)
         image = None
@@ -163,7 +165,6 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
             blur = ImageFilter.GaussianBlur(mask_blur)
             image = Image.composite(image.filter(blur), orig, mask.filter(blur))
             image = image.convert("RGB")
-
         elif mode == 2:
             if not init_img_with_mask:
                 raise Exception('init_img_with_mask not found')
@@ -199,7 +200,6 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
             mask = None
         else:
             raise ValueError(f'mode value error, except 0~5 got {mode}')
-
         if image is not None:
             image = ImageOps.exif_transpose(image)
 
@@ -235,8 +235,8 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
         self.seed_resize_from_w = seed_resize_from_w
         self.seed_enable_extras = seed_enable_extras
         self.sampler_name = sampler_name or 'Euler a'
-        self.batch_size = batch_size
-        self.n_iter = n_iter
+        self.batch_size = batch_size if batch_size > 0 else 1
+        self.n_iter = n_iter if n_iter > 0 else 1
         self.steps = steps
         self.cfg_scale = cfg_scale  # 7
         self.width = width
@@ -300,7 +300,7 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
     @classmethod
     def from_task(cls, task: Task, default_script_arg_img2img: typing.Sequence, refiner_checkpoint: str = None):
         base_model_path = task['base_model_path']
-        alwayson_scripts = task['alwayson_scripts']
+        alwayson_scripts = task['alwayson_scripts'] if 'alwayson_scripts' in task else None
         user_id = task['user_id']
         select_script = task.get('select_script')
         select_script_name, select_script_args = None, None
@@ -318,10 +318,12 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
 
         kwargs = task.data.copy()
         kwargs.pop('base_model_path')
-        kwargs.pop('alwayson_scripts')
         kwargs.pop('prompt')
         kwargs.pop('negative_prompt')
         kwargs.pop('user_id')
+
+        if 'alwayson_scripts' in kwargs:
+            kwargs.pop('alwayson_scripts')
         if 'select_script' in kwargs:
             kwargs.pop('select_script')
         if 'select_script_name' in kwargs:
@@ -412,6 +414,7 @@ class Img2ImgTaskHandler(TaskHandler):
     def __init__(self):
         super(Img2ImgTaskHandler, self).__init__(TaskType.Image2Image)
         self._default_script_args_load_t = 0
+        self._register()
 
     def _refresh_default_script_args(self):
         if time.time() - self._default_script_args_load_t > 3600 * 4:
@@ -602,7 +605,7 @@ class Img2ImgTaskHandler(TaskHandler):
 
         shared.state.begin()
         # shared.state.job_count = process_args.n_iter * process_args.batch_size
-
+        inference_start = time.time()
         if process_args.is_batch:
             assert not shared.cmd_opts.hide_ui_dir_config, "Launched with --hide-ui-dir-config, batch img2img disabled"
 
@@ -621,7 +624,7 @@ class Img2ImgTaskHandler(TaskHandler):
                 processed = process_images(process_args)
         shared.state.end()
         process_args.close()
-
+        inference_time = time.time() - inference_start
         progress.status = TaskStatus.Uploading
         yield progress
 
@@ -630,8 +633,10 @@ class Img2ImgTaskHandler(TaskHandler):
                                        process_args.outpath_grids,
                                        process_args.outpath_scripts,
                                        task.id,
-                                       inspect=process_args.kwargs.get("need_audit", False))
-
+                                       inspect=process_args.kwargs.get("need_audit", False),
+                                       detect_multi_face=process_args.kwargs.get("detect_multi_face", False),
+                                       forbidden_review=process_args.kwargs.get("forbidden_review", False))
+        images.update({'inference_time': inference_time})
         progress = TaskProgress.new_finish(task, images)
         progress.update_seed(processed.all_seeds, processed.all_subseeds)
 
@@ -656,13 +661,15 @@ class Img2ImgTaskHandler(TaskHandler):
         #         progress += job_no / job_count
         #     if sampling_steps > 0 and job_count > 0:
         #         progress += 1 / job_count * sampling_step / sampling_steps
+        image_numbers = progress.task['n_iter'] * progress.task['batch_size']
+        if image_numbers <= 0:
+            image_numbers = 1
         if shared.state.job_count > 0:
             job_no = shared.state.job_no - 1 if shared.state.job_no > 0 else 0
-            p += job_no / (progress.task['n_iter'] * progress.task['batch_size'])
+            p += job_no / (image_numbers)
             # p += (shared.state.job_no) / shared.state.job_count
         if shared.state.sampling_steps > 0:
-            p += 1 / (progress.task['n_iter'] * progress.task[
-                'batch_size']) * shared.state.sampling_step / shared.state.sampling_steps
+            p += 1 / (image_numbers) * shared.state.sampling_step / shared.state.sampling_steps
 
         current_progress = min(p * 100, 99)
         if current_progress < progress.task_progress:
@@ -671,8 +678,14 @@ class Img2ImgTaskHandler(TaskHandler):
         time_since_start = time.time() - shared.state.time_start
         eta = (time_since_start / p)
         progress.task_progress = current_progress
-        progress.eta_relative = int(eta - time_since_start)
-        # print(f"-> progress: {progress.task_progress}, real:{p}\n")
+        fixed_eta = getattr(progress, "fixed_eta", 0)
+
+        # progress < 10不更新eta使用原有的eta
+        if fixed_eta > 0 and current_progress > 10 and progress.eta_relative > 0:
+            progress.eta_relative = int(eta - time_since_start) + fixed_eta
+        else:
+            progress.eta_relative = int(eta - time_since_start)
+            # print(f"-> progress: {progress.task_progress}, real:{p}\n")
 
         shared.state.set_current_image()
         if shared.state.current_image:
@@ -708,11 +721,18 @@ class Img2ImgTaskHandler(TaskHandler):
             })
             yield progress
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        minor_type = Img2ImgMinorTaskType(task.minor_type)
-        if minor_type <= Img2ImgMinorTaskType.Img2Img:
-            yield from self._exec_img2img(task)
-        elif minor_type == Img2ImgMinorTaskType.RunControlnetAnnotator:
-            yield from exec_control_net_annotator(task)
-        elif minor_type == Img2ImgMinorTaskType.Interrogate:
-            yield from self._exec_interrogate(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     minor_type = Img2ImgMinorTaskType(task.minor_type)
+    #     if minor_type <= Img2ImgMinorTaskType.Img2Img:
+    #         yield from self._exec_img2img(task)
+    #     elif minor_type == Img2ImgMinorTaskType.RunControlnetAnnotator:
+    #         yield from exec_control_net_annotator(task)
+    #     elif minor_type == Img2ImgMinorTaskType.Interrogate:
+    #         yield from self._exec_interrogate(task)
+
+    def _register(self):
+        self.register(
+            (Img2ImgMinorTaskType.Img2Img, self._exec_img2img),
+            (Img2ImgMinorTaskType.RunControlnetAnnotator, exec_control_net_annotator),
+            (Img2ImgMinorTaskType.Interrogate, self._exec_interrogate)
+        )

@@ -17,11 +17,12 @@ from loguru import logger
 from tools.image import compress_image
 from PIL.PngImagePlugin import PngInfo
 from filestorage import find_storage_classes_with_env, signature_url
-from tools.environment import S3SDWEB, S3ImageBucket
+from tools.environment import S3SDWEB, S3ImageBucket, Env_DtAppKey
 from tools.processor import MultiThreadWorker
 
 
 class ModelType(IntEnum):
+    Unknown = -1
     CheckPoint = 1
     Lora = 2
     Embedding = 3
@@ -67,7 +68,8 @@ class ImageKeys(UserDict):
         low = self['low'] + ik['low']
         return ImageKeys(high, low)
 
-    def sorted_keys(self, keys: typing.Sequence):
+    def sorted_keys(self, keys: typing.Sequence, forbidden_keys: typing.Mapping[str, typing.Any] = None,
+                    has_grid: bool = False):
         def sort_file(p: str):
             basename, _ = os.path.splitext(os.path.basename(p))
 
@@ -85,11 +87,20 @@ class ImageKeys(UserDict):
         if not keys:
             return []
 
-        return sorted(keys, key=sort_file)
+        sorted_keys = sorted(keys, key=sort_file)
+        if forbidden_keys and sorted_keys:
+            for i in range(len(sorted_keys)):
+                key = sorted_keys[i]
+                if key in forbidden_keys:
+                    sorted_keys[i] = ForbiddenCoverKey
+            if has_grid:
+                sorted_keys[0] = ForbiddenCoverKey
 
-    def to_dict(self):
-        self['high'] = self.sorted_keys(self['high'])
-        self['low'] = self.sorted_keys(self['low'])
+        return sorted_keys
+
+    def to_dict(self, forbidden_keys: typing.Mapping[str, typing.Any] = None, has_grid: bool = False):
+        self['high'] = self.sorted_keys(self['high'], forbidden_keys, has_grid)
+        self['low'] = self.sorted_keys(self['low'], forbidden_keys, has_grid)
         return dict(self)
 
 
@@ -111,17 +122,21 @@ class ImageOutput:
         local_low_images, compress_images = [], []
         for image_path in self.local_files:
             filename = os.path.basename(image_path)
+            _, ex = os.path.splitext(filename)
+            # 不转GIF
+            if ex.lower() == ".gif":
+                continue
             low_file = os.path.join(self.output_dir, 'low-' + filename)
             if not os.path.isfile(low_file):
                 compress_images.append((image_path, low_file))
                 # compress_image(image_path, low_file)
             local_low_images.append(low_file)
-
-        worker = MultiThreadWorker(compress_images, compress_image, 4)
-        worker.run()
-        for image_path in local_low_images:
-            if not image_path:
-                raise OSError(f'cannot found low image:{image_path}')
+        if compress_images:
+            worker = MultiThreadWorker(compress_images, compress_image, 4)
+            worker.run()
+            for image_path in local_low_images:
+                if not image_path:
+                    raise OSError(f'cannot found low image:{image_path}')
 
         return local_low_images
 
@@ -198,13 +213,33 @@ class ImageOutput:
                         shutil.rmtree(self.output_dir)
                     except:
                         pass
+                if len(high_keys) != len(low_keys):
+                    low_number, high_number = 0, 0
+                    for k in high_keys:
+                        _, ex = os.path.splitext(k)
+                        if ex != ".gif":
+                            high_number = 1 + high_number
+                    for k in low_keys:
+                        _, ex = os.path.splitext(k)
+                        if ex != ".gif":
+                            low_number = 1 + low_number
+                    if low_number != high_number:
+                        # logger.error(f'low_keys:{low_keys},high_keys:{high_keys}')
+                        msg = f"[warning] upload image failed,low_number != high_number," \
+                              f"low_number:{low_number}, high_number:{high_number}"
+                        if len(self.local_files) != len(low_files):
+                            msg += ", compress image fail"
+                        # raise OSError(msg)
+                        logger.warning(msg)
+                        if low_number < high_number:
+                            low_keys = high_keys
 
                 return ImageKeys(high_keys, low_keys)
 
             # local
         return ImageKeys(self.local_files, low_files)
 
-    def inspect(self, images: ImageKeys):
+    def inspect(self, images: ImageKeys, forbidden_review=False):
         api = 'https://diting.xingzheai.cn/api/v1.0/image/inspect'
         urls = {}
         url_inspect_map = {}
@@ -227,13 +262,15 @@ class ImageOutput:
         forbidden_keys = defaultdict(int)
         try:
             if urls:
+                dt_appkey = os.getenv(Env_DtAppKey, 'QX9HNRAYMFLBIG7T')
+
                 resp = requests.post(api, json={
-                    'token': 'QX9HNRAYMFLBIG7T',
+                    'token': dt_appkey,
                     'scenes': ["politics", "porn"],
                     'tasks': list(urls.values())
                 }, timeout=5)
 
-                logger.info(f"request {api}")
+                logger.info(f"request {api}, app key:{dt_appkey}")
                 if resp:
                     data = resp.json()
                     logger.debug(f"response {resp.text}")
@@ -243,7 +280,7 @@ class ImageOutput:
                             img_res = image_item['result']
                             url = image_item['url']
                             for scene in img_res:
-                                if scene['scene'] == 'porn':
+                                if scene['scene'] == 'porn' and not forbidden_review:
                                     forbidden_flag = scene.get('suggestion', 'pass') == 'block'
                                 else:
                                     forbidden_flag = scene.get('suggestion', 'pass') != 'pass'
@@ -260,19 +297,16 @@ class ImageOutput:
             logger.exception(f'request {api} failed')
             pass
 
-        default_cover = ForbiddenCoverKey
+        # default_cover = ForbiddenCoverKey
 
-        for i, low_key in enumerate(images['low']):
-            if low_key in forbidden_keys:
-                images['low'][i] = default_cover
-
-        for i, high_key in enumerate(images['high']):
-            dirname = os.path.dirname(high_key)
-            basename = os.path.basename(high_key)
-            low_key = os.path.join(dirname, f'low-{basename}')
-            if low_key in forbidden_keys:
-                images['high'][i] = default_cover
-
-
-
-
+        # for i, low_key in enumerate(images['low']):
+        #     if low_key in forbidden_keys:
+        #         images['low'][i] = default_cover
+        #
+        # for i, high_key in enumerate(images['high']):
+        #     dirname = os.path.dirname(high_key)
+        #     basename = os.path.basename(high_key)
+        #     low_key = os.path.join(dirname, f'low-{basename}')
+        #     if low_key in forbidden_keys:
+        #         images['high'][i] = default_cover
+        return forbidden_keys

@@ -5,6 +5,7 @@
 # @Site    :
 # @File    : controlnet.py
 # @Software: Hifive
+import json
 import os.path
 import time
 import traceback
@@ -76,6 +77,14 @@ reverse_preprocessor_aliases = {
     preprocessor_aliases[k]: k for k in preprocessor_aliases.keys()}
 
 
+class JsonAcceptor:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def accept(self, json_dict: dict) -> None:
+        self.value = json.dumps(json_dict)
+
+
 def HWC3(x):
     assert x.dtype == np.uint8
     if x.ndim == 2:
@@ -114,8 +123,10 @@ class RunAnnotatorArgs:
                  t2i_h: int = 1520,
                  pp: bool = False,
                  rm: str = 'Resize and Fill',
+                 model: str = 'None',
                  **kwargs):
         image = get_tmp_local_path(image)
+        self.model = strip_model_hash(model)
         self.image = np.array(Image.open(image).convert('RGB'))
         if not mask:
             shape = list(self.image.shape)
@@ -207,6 +218,16 @@ def pixel_perfect_resolution(
     return int(np.round(estimation))
 
 
+def visualize_inpaint_mask(img):
+    if img.ndim == 3 and img.shape[2] == 4:
+        result = img.copy()
+        mask = result[:, :, 3]
+        mask = 255 - mask // 2
+        result[:, :, 3] = mask
+        return np.ascontiguousarray(result.copy())
+    return img
+
+
 def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
     progress = TaskProgress.new_ready(task, 'at the ready')
     yield progress
@@ -235,21 +256,26 @@ def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
 
             module = args.module
             img = HWC3(args.image)
-            if not ((args.mask[:, :, 0] == 0).all() or (args.mask[:, :, 0] == 255).all()):
-                img = HWC3(args.mask[:, :, 0])
+            has_mask = not ((args.mask[:, :, 0] <= 5).all() or (args.mask[:, :, 0] >= 250).all())
 
             if 'inpaint' in module:
                 color = HWC3(args.image)
                 alpha = args.mask[:, :, 0:1]
                 img = np.concatenate([color, alpha], axis=2)
-
+            elif has_mask:
+                img = HWC3(args.mask[:, :, 0])
             # def get_module_basename(self, module):
             #     if module is None:
             #         module = 'none'
             #
             #     return global_state.reverse_preprocessor_aliases.get(module, module)
+            if hasattr(control_net_script, 'find_preprocessor'):
+                preprocessor = control_net_script.find_preprocessor(args.module)
+            elif hasattr(control_net_script, 'preprocessor'):
+                preprocessor = control_net_script.preprocessor[args.module]
+            else:
+                raise ValueError('cannot find preprocessor')
 
-            preprocessor = control_net_script.preprocessor[args.module]
             if args.pp:
                 args.pres = pixel_perfect_resolution(
                     img,
@@ -257,35 +283,70 @@ def exec_control_net_annotator(task: Task) -> typing.Iterable[TaskProgress]:
                     target_W=args.t2i_w,
                     resize_mode=args.rm,
                 )
-            if args.pres > 64:
-                # 参数校验：超过范围就取最小值
-                args.pthr_a, args.pthr_b = run_annotato_args_check(
-                    args.module, args.pthr_a, args.pthr_b)
 
-                result, is_image = preprocessor(
-                    img, res=args.pres, thr_a=args.pthr_a, thr_b=args.pthr_b)
-            else:
-                result, is_image = preprocessor(img)
+            def is_openpose(module: str):
+                return "openpose" in module
 
-            if "clip" in module:
-                result = clip_vision_visualization(result)
-                is_image = True
+            json_acceptor = JsonAcceptor()
 
-            r, pli_img = None, None
-            if is_image:
-                if result.ndim == 3 and result.shape[2] == 4:
-                    inpaint_mask = result[:, :, 3]
-                    result = result[:, :, 0:3]
-                    result[inpaint_mask > 127] = 0
-                    pli_img = Image.fromarray(result, mode='RGB')
-                elif result.ndim == 2:
-                    pli_img = Image.fromarray(result, mode='L')
+            result = preprocessor.cached_call(
+                img,
+                resolution=args.pres,
+                slider_1=args.pthr_a,
+                slider_2=args.pthr_b,
+                low_vram=False,
+                json_pose_callback=(
+                    json_acceptor.accept if is_openpose(module) else None
+                ),
+                model=args.model,
+            )
+
+            # if args.pres > 64:
+            #     # 参数校验：超过范围就取最小值
+            #     args.pthr_a, args.pthr_b = run_annotato_args_check(
+            #         args.module, args.pthr_a, args.pthr_b)
+            #     # result, is_image = preprocessor(
+            #     #     img, res=args.pres, thr_a=args.pthr_a, thr_b=args.pthr_b)
+            #     result, is_image = preprocessor(
+            #         img,
+            #         res=args.pres,
+            #         thr_a=args.pthr_a,
+            #         thr_b=args.pthr_b,
+            #         json_pose_callback=json_acceptor.accept
+            #         if is_openpose(module)
+            #         else None,
+            #     )
+            # else:
+            #     result, is_image = preprocessor(img)
+
+            # if not is_image:
+            #     # 返回原图
+            #     result = img
+            #     is_image = True
+            #
+            # # if "clip" in module:
+            # #     result = clip_vision_visualization(result)
+            # #     is_image = True
+            # r, pli_img = None, None
+            im = result.display_images[0] if result.display_images else None
+
+            if im is not None and im.any():
+                if im.ndim == 3 and im.shape[2] == 4:
+                    inpaint_mask = im[:, :, 3]
+                    im = im[:, :, 0:3]
+                    im[inpaint_mask > 127] = 0
+                    pli_img = Image.fromarray(im, mode='RGB')
+                elif im.ndim == 2:
+                    pli_img = Image.fromarray(im, mode='L')
                 else:
-                    pli_img = Image.fromarray(result, mode='RGB')
-
-            if pli_img:
+                    pli_img = Image.fromarray(im, mode='RGB')
+            else:
+                pli_img = None
+            if pli_img is not None:
                 filename = task.id + '.png'
                 r = upload_pil_image(True, pli_img, name=filename)
+            else:
+                r = task['image']
 
             progress = TaskProgress.new_finish(task, {
                 'all': {
@@ -332,42 +393,56 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
 
             def set_default(item):
                 image, mask = None, None
+                image_np = None
+
                 if item.get('enabled', False):
 
                     image = get_tmp_local_path(
                         item['image']['image']) if item['image']['image'] else None
-                    image = Image.open(image).convert(
-                        'RGBA') if image else None
-
-                    size = image.size if image else None
-                    image = np.array(image) if image else None
+                    image = Image.open(image) if image else None
+                    mode = image.mode
+                    if not image:
+                        raise ValueError('cannot found controlnet image')
+                    # image = image.convert('RGBA')
+                    image_np = np.array(image.convert('RGB'), dtype=np.uint8) if image else None
                     mask = item['image'].get('mask')
                     if not mask:
-                        shape = list(size)
-                        shape.append(4)  # rgba
-                        mask = np.zeros(shape)
-                        mask[:, :, -1] = 255
+                        shape = image_np.shape
+                        mask = np.zeros(shape, dtype=np.uint8)
+                        # if mode == "RGBA":  # whiten any opaque pixels in the mask
+                        #     alpha_data = image.getchannel("A").convert("L")
+                        #     mask_im = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
+                        #     mask = np.array(mask_im, dtype=np.uint8)
+                        # else:
+                        #     mask = np.zeros(shape, dtype=np.uint8)
+                        #     mask[:, :, -1] = 255
                         # mask = None
                     elif isinstance(mask, str) and mask:
                         mask = get_tmp_local_path(item['image']['mask'])
-                        mask = np.array(Image.open(mask))
+                        mask_im = Image.open(mask)
+                        if mask_im.mode == 'RGBA':
+                            alpha_data = mask_im.getchannel("A").convert("L")
+                            mask_al = Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
+                            mask = np.array(mask_al, dtype=np.uint8)
+                        else:
+                            mask = np.array(mask_im, dtype=np.uint8)
 
                 control_unit = {
                     'enabled': item.get('enabled', False),
-                    'guess_mode': item.get('guess_mode', False),
+                    # 'guess_mode': item.get('guess_mode', False),
                     'guidance_start': item.get('guidance_start', 0) or 0,
                     'guidance_end': item.get('guidance_end', 1) or 1,
                     'image': {
-                        'image': image,
+                        'image': image_np,
                         'mask': mask,
                     },
-                    'invert_image': item.get('invert_image', False),
+                    # 'invert_image': item.get('invert_image', False),
                     'low_vram': item.get('low_vram', False),
                     'model': item.get('model', 'none') or 'none',
                     'module': item.get('module', 'none') or 'none',
                     'processor_res': item.get('processor_res', 64),
                     'resize_mode': item.get('resize_mode', 'Crop and Resize') or 'Crop and Resize',
-                    'rgbbgr_mode': item.get('rgbbgr_mode', False),
+                    # 'rgbbgr_mode': item.get('rgbbgr_mode', False),
                     'threshold_a': item.get('threshold_a', 64),
                     'threshold_b': item.get('threshold_b', 64),
                     'weight': item.get('weight', 1) or 1,
@@ -384,11 +459,12 @@ class ControlnetFormatter(AlwaysonScriptArgsFormatter):
                 control_unit['model'] = strip_model_hash(control_unit['model'])
                 # if control_unit['model'] == 'None':
                 #     control_unit['model'] = 'none'
-                if control_unit['module'] == 'None':
+                if control_unit['module'] == 'None' or control_unit['module'] == '无':
                     control_unit['module'] = 'none'
                 if control_unit['module'] in FreePreprocessors:
                     control_unit['model'] = 'None'
-
+                if "clip" in control_unit['module'] or control_unit['module'] == "ip-adapter_face_id_plus":
+                    control_unit['low_vram'] = True
                 new_args.append(control_unit)
 
             if isinstance(control_net_script_args, Iterable):

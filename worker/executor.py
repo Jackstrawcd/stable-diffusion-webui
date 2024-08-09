@@ -8,18 +8,23 @@
 import os.path
 import queue
 import random
+import threading
 import time
 import typing
 from queue import Queue
 from loguru import logger
+from tools import safety_clean_tmp
+from tools.disk import tidy_model_caches
 from worker.task import Task, TaskProgress
-from modules.shared import mem_mon as vram_mon
+from modules.shared import mem_mon as vram_mon, models_path
 from worker.handler import TaskHandler
 from modules.devices import torch_gc
 from worker.task_recv import TaskReceiver, TaskTimeout
 from threading import Thread, Condition, Lock
 from tools.model_hist import CkptLoadRecorder
-from worker.k8s_health import write_healthy, system_exit
+from tools.environment import get_recv_mode, get_pod_status_env
+from worker.k8s_health import write_healthy, system_exit, process_health
+from worker import graceful_exit
 
 
 class TaskExecutor(Thread):
@@ -28,13 +33,15 @@ class TaskExecutor(Thread):
                  args=(), kwargs=None, *, daemon=None, train_only=False):
         self.recorder = ckpt_recorder
         self._handlers = {}
-        self.receiver = TaskReceiver(ckpt_recorder, train_only, self.can_exec_task)
+        self.receiver = TaskReceiver(ckpt_recorder, train_only, self.can_exec_task, self.before_receive_task)
         self.timeout = timeout if timeout > 0 else TaskTimeout
         self.__stop = False
         self.mutex = Lock()
         self.not_busy = Condition(self.mutex)
         self.queue = Queue(1)  # 也可直接使用变量进行消息传递。。
+        self.current_task: TaskProgress = None  # TaskProgress
         name = name or 'task-executor'
+        self.mode = get_recv_mode()
         if train_only:
             logger.info("[executor] >>> run on train mode.")
         super(TaskExecutor, self).__init__(group, target, name, args, kwargs, daemon=daemon)
@@ -48,8 +55,10 @@ class TaskExecutor(Thread):
         self.__stop = True
 
     def can_exec_task(self, task: Task) -> bool:
-        types = self._handlers.keys()
-        return task.task_type in types
+        handler = self._handlers.get(task.task_type)
+        if not handler:
+            return False
+        return handler.can_do(task)
 
     def add_handler(self, *handlers: TaskHandler):
         for handler in handlers:
@@ -66,15 +75,22 @@ class TaskExecutor(Thread):
     def nofity(self):
         if getattr(self.not_busy, "value", 0) == 0:
             return
-
         with self.not_busy:
             self.not_busy.notify_all()
             logger.debug("notify receiver ")
             setattr(self.not_busy, "value", 0)
 
-    def task_progress(self, p: TaskProgress):
-        if p.pre_task_completed():
-            self.nofity()
+    def task_progress(self, p: TaskProgress, quit: bool):
+        # 更新全局任务状态
+        self.current_task = p
+        if get_pod_status_env() == graceful_exit.TERMINATING_STATUS:
+            graceful_exit.is_wait_task(p)
+            # 有quit标记代表handler侧即将退出不再获取任务
+            if p.completed and not quit:
+                self.nofity()
+        else:
+            if p.pre_task_completed():
+                self.nofity()
 
     def exec_task(self):
         write_healthy(True)
@@ -82,7 +98,7 @@ class TaskExecutor(Thread):
         logger.info(f"executor start with:{','.join(handlers)}")
         while not self.__stop:
             try:
-                logger.info(f"====>>> start receive and execute task")
+                logger.info(f"====>>> start receive and execute task, thread:{threading.current_thread().name}")
                 task = self.queue.get(timeout=10)
                 if not task:
                     continue
@@ -100,16 +116,19 @@ class TaskExecutor(Thread):
                     handler.set_failed(task, f'task time out(task create time:{create_time}, now:{now})')
                     self.nofity()
                     continue
+
+                self.current_task = TaskProgress.new_ready(task, "reading")
                 handler(task, progress_callback=self.task_progress)
-                if random.randint(1, 10) < 3:
-                    torch_gc()
-                    free, total = vram_mon.cuda_mem_get_info()
-                    system_exit(free, total)
-                    # 释放磁盘空间
-                    self._clean_disk()
+                logger.info(f"====>>> exec task finish:{task.id}, stop status:{self.__stop}")
             except queue.Empty:
                 if random.randint(1, 10) < 3:
                     logger.info('task queue is empty...')
+                    torch_gc()
+                    self.nofity()
+                if not self.is_alive():
+                    logger.info('task receiver dead')
+                    free, total = vram_mon.cuda_mem_get_info()
+                    system_exit(free, total, coercive=True)
                 continue
             except Exception:
                 logger.exception("executor err")
@@ -119,32 +138,81 @@ class TaskExecutor(Thread):
         write_healthy(False)
         self._close()
 
+    def before_receive_task(self, *task_ids):
+        def has_train_task():
+            for id in task_ids:
+                if isinstance(id, bytes):
+                    id = id.decode()
+                if 'train' in id:
+                    return True
+
+        train_task = has_train_task()
+
+        if train_task:
+            logger.info("before receive train task, check memory info...")
+            ok = torch_gc()
+            free, total = vram_mon.cuda_mem_get_info()
+            system_exit(free, total, threshold_b=12, coercive=not ok)
+        elif random.randint(1, 10) < 3:
+            logger.info("before receive task, check memory info...")
+            ok = torch_gc()
+            free, total = vram_mon.cuda_mem_get_info()
+            system_exit(free, total, coercive=not ok)
+            process_health()
+
+        return True
+
+    def _get_persist_model_hashes(self):
+        try:
+            rds = self.receiver.get_redis_cli()
+            hashes = rds.lrange('persist_models', 0, -1)
+        except:
+            return None
+        return hashes
+
+    def _receive_exec_task(self, task: Task):
+        if random.randint(0, 10) < 5:
+            # 释放磁盘空间
+            safety_clean_tmp()
+            model_hashes = self._get_persist_model_hashes()
+            tidy_model_caches(models_path, persist_model_hashes=model_hashes)
+        logger.info(f"====>>> preload task:{task.id} thread:{threading.current_thread().name}")
+        self.queue.put(task)
+        logger.info(f"====>>> push task:{task.id}")
+        if isinstance(task, Task):
+            logger.debug(f"====>>> waiting task:{task.id}, stop receive.")
+            setattr(self.not_busy, "value", 1)
+            try:
+                timeout = 3600 * 1
+                self.not_busy.wait(timeout=timeout)
+                logger.info(f"====>>> acquire locker, time out:{timeout} seconds")
+            except Exception as err:
+                free, total = vram_mon.cuda_mem_get_info()
+                logger.exception("executor cannot require locker, quit...")
+                self.receiver.close()
+                system_exit(free, total, True)
+                raise err
+            self.receiver.decr_train_concurrency(task)
+            logger.debug(f"====>>> waiting task:{task.id}, begin receive.")
+
     def _get_task(self):
-        while self.is_alive() and not self.receiver.closed:
+        while self.is_alive() and not self.receiver.closed and not self.__stop:
             with self.not_busy:
                 if not self.queue.full():
-
-                    for task in self.receiver.task_iter():
-                        logger.info(f"====>>> preload task:{task.id}")
-                        self.queue.put(task)
-                        logger.info(f"====>>> push task:{task.id}")
-                        if isinstance(task, Task):
-                            logger.debug(f"====>>> waiting task:{task.id}, stop receive.")
-                            setattr(self.not_busy, "value", 1)
+                    try:
+                        for task in self.receiver.task_iter():
                             try:
-                                timeout = 3600 * 16
-                                self.not_busy.wait(timeout=timeout)
-                                logger.info(f"====>>> acquire locker, time out:{timeout} seconds")
-                            except Exception as err:
-                                free, total = vram_mon.cuda_mem_get_info()
-                                logger.exception("executor cannot require locker, quit...")
-                                self.receiver.close()
-                                system_exit(free, total, True)
-                                break
-                            self.receiver.decr_train_concurrency(task)
-                            logger.debug(f"====>>> waiting task:{task.id}, begin receive.")
+                                self._receive_exec_task(task)
+                            except:
+                                continue
+                    except Exception:
+                        logger.exception("receive task failed, restart app...")
+                        self.receiver.close()
+                        self.__stop = True
+                        system_exit(0, 0, True)
                 else:
-                    self.not_busy.wait()
+                    setattr(self.not_busy, "value", 2)
+                    self.not_busy.wait(60)
         logger.info("=======> task receiver quit!!!!!!")
         self.__stop = True
 
@@ -158,30 +226,42 @@ class TaskExecutor(Thread):
 
         return now - task.create_at > self.timeout
 
-    def _clean_disk(self, expire_days=14):
-        # 根据mtime
-        dirnames = ['models/Stable-diffusion', 'models/Lora', 'models/LyCORIS']
-        now = time.time()
-        interval = expire_days*24*3600
-        for dir in dirnames:
-            if not os.path.isdir(dir):
-                continue
-            for f in os.listdir(dir):
-                full = os.path.join(dir, f)
-                if os.path.isfile(full):
-                    mtime = os.path.getmtime(full)
-                    if now - mtime < interval:
+    def _single_thread_worker(self):
+        write_healthy(True)
+        handlers = [x.name for x in self._handlers.keys()]
+        logger.info(f"executor start with:{','.join(handlers)}")
+        while not self.__stop:
+            for task in self.receiver.task_iter():
+                try:
+                    logger.info(f"====>>> start receive and execute task")
+                    logger.info(f"====>>> receive task:{task.desc()}")
+                    logger.info(f"====>>> model history:{self.recorder.history()}")
+
+                    handler = self.get_handler(task)
+                    if not handler:
+                        self.error_handler(task, Exception('can not found task handler'))
+                    # 判断TASK超时。
+                    if self._is_timeout(task):
+                        now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+                        create_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task.create_at))
+                        handler.set_failed(task, f'task time out(task create time:{create_time}, now:{now})')
                         continue
-                    try:
-                        logger.warning(f'[WARN] file:{full}, mtime expired!!!!')
-                        os.remove(full)
-                    except:
-                        logger.exception(f'cannot remove file:{full}')
+
+                    self.current_task = TaskProgress.new_ready(task, "reading")
+                    handler(task)
+                    logger.info(f"====>>> exec task finish:{task.id}, stop status:{self.__stop}")
+                except:
+                    logger.exception("receive task failed, restart app...")
+                    self.receiver.close()
+                    self.__stop = True
+                    system_exit(0, 0, True)
 
     def run(self) -> None:
         self._get_task()
 
     def start(self) -> None:
-        super(TaskExecutor, self).start()
-        self.exec_task()
-
+        if self.mode == 1:
+            self._single_thread_worker()
+        else:
+            super(TaskExecutor, self).start()
+            self.exec_task()

@@ -21,6 +21,7 @@ IMAGE_SIZE = 448
 # wd-v1-4-swinv2-tagger-v2 / wd-v1-4-vit-tagger / wd-v1-4-vit-tagger-v2/ wd-v1-4-convnext-tagger / wd-v1-4-convnext-tagger-v2
 DEFAULT_WD14_TAGGER_REPO = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
 FILES = ["keras_metadata.pb", "saved_model.pb", "selected_tags.csv"]
+FILES_ONNX = ["model.onnx"]
 SUB_DIR = "variables"
 SUB_DIR_FILES = ["variables.data-00000-of-00001", "variables.index"]
 CSV_FILE = FILES[-1]
@@ -252,7 +253,10 @@ def get_wd_tagger(train_data_dir="", # 训练数据路径
                                                     add_confident_as_weight=False,replace_underscore=remove_underscore,
                                                     replace_underscore_excludes=[],escape_tag=False)
 
-        tag_text = ", ".join(post_tags)
+        # tag_text = ", ".join(post_tags)
+        tag_text = ",".join(post_tags)
+        if tag_text:  # 确保tag_text非空
+            tag_text = tag_text[1:]
 
         with open(os.path.splitext(path)[0] + caption_extension, "wt", encoding="utf-8") as f:
             f.write(tag_text + "\n")

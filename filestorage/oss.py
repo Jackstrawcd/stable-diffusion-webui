@@ -7,10 +7,10 @@
 # @Software: Hifive
 import os
 import shutil
+import time
 import uuid
-
 import oss2
-
+from tools.redis import RedisLocker
 from filestorage.storage import FileStorage
 from tools.processor import MultiThreadWorker
 from tools.environment import get_file_storage_system_env, Env_EndponitKey, \
@@ -21,7 +21,7 @@ def download(obj, bucket, local_path, tmp):
     if not os.path.isfile(local_path):
         tmp_file = os.path.join(tmp, os.path.basename(obj.key))
         oss2.resumable_download(bucket, obj.key, tmp_file)
-        if os.path.isfile(tmp_file):
+        if os.path.isfile(tmp_file) and not os.path.isfile(local_path):
             shutil.move(tmp_file, local_path)
 
 
@@ -54,23 +54,29 @@ class OssFileStorage(FileStorage):
                 return local_path
             if os.path.isfile(remoting_path):
                 return remoting_path
-            try:
-                key = self.get_keyname(remoting_path, self.bucket_name)
-                # bucket, key = self.extract_buack_key_from_path(remoting_path)
-                self.logger.info(f"download {key} from oss to {local_path}")
-                tmp_file = os.path.join(self.tmp_dir, os.path.basename(local_path))
-                # bucket = oss2.Bucket(self.auth, self.endpoint, bucket)
-                oss2.resumable_download(self.bucket, key, tmp_file, progress_callback=progress_callback)
-                if os.path.isfile(tmp_file):
-                    shutil.move(tmp_file, local_path)
-                    return local_path
-                else:
 
-                    raise OSError(f'cannot download file from oss, {remoting_path}')
-            except Exception:
-                if os.path.isfile(local_path):
-                    os.remove(local_path)
-                raise
+            key = self.get_keyname(remoting_path, self.bucket_name)
+            # bucket, key = self.extract_buack_key_from_path(remoting_path)
+            self.logger.info(f"download {key} from oss to {local_path}")
+            tmp_file = os.path.join(self.tmp_dir, "tmp-" + os.path.basename(local_path))
+            # bucket = oss2.Bucket(self.auth, self.endpoint, bucket)
+            # f = self.acquire_flock(local_path)
+            # acquire file locker
+            if os.path.isfile(local_path):
+                return local_path
+
+            oss2.resumable_download(self.bucket, key, tmp_file, progress_callback=progress_callback)
+
+            if os.path.isfile(local_path):
+                return local_path
+
+            if os.path.isfile(tmp_file):
+                shutil.move(tmp_file, local_path)
+                return local_path
+            else:
+
+                raise OSError(f'cannot download file from oss, {remoting_path}')
+
         else:
             raise OSError('cannot init oss or file not found')
 
@@ -84,12 +90,14 @@ class OssFileStorage(FileStorage):
         # 分片上传
         headers = oss2.CaseInsensitiveDict()
         headers['Content-Type'] = self.mmie(local_path)
-        resp = self.bucket.put_object_from_file(key, local_path)
-
-        if resp.status < 300:
-            return remoting_path
-        else:
-            raise OSError(f'cannot download file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+        for i in range(3):
+            resp = self.bucket.put_object_from_file(key, local_path, headers=headers)
+            if resp.status < 300:
+                return remoting_path
+            elif i >= 2:
+                raise OSError(f'cannot upload file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+            else:
+                time.sleep(1)
 
     def upload_content(self, remoting_path, content) -> str:
         # bucket, key = self.extract_buack_key_from_path(remoting_path)
@@ -98,11 +106,14 @@ class OssFileStorage(FileStorage):
         # bucket = oss2.Bucket(self.auth, self.endpoint, bucket)
         # 分片上传
         headers = oss2.CaseInsensitiveDict()
-        resp = self.bucket.put_object(key, content, headers)
-        if resp.status < 300:
-            return remoting_path
-        else:
-            raise OSError(f'cannot download file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+        for i in range(3):
+            resp = self.bucket.put_object(key, content, headers)
+            if resp.status < 300:
+                return remoting_path
+            elif i >= 2:
+                raise OSError(f'cannot upload file from oss, resp:{resp.errorMessage}, key: {remoting_path}')
+            else:
+                time.sleep(1)
 
     def preview_url(self, remoting_path: str) -> str:
         # bucket, key = self.extract_buack_key_from_path(remoting_path)
@@ -137,3 +148,57 @@ class OssFileStorage(FileStorage):
                 return False
 
         return True
+
+    def lock_download(self, remoting_path, local_path, progress_callback=None, expire=1800, flocker=True) -> str:
+        if os.path.isfile(local_path):
+            return local_path
+        if os.path.isfile(remoting_path):
+            return remoting_path
+        locker_key = self.get_lock_key(remoting_path)
+        key = self.get_keyname(remoting_path, self.bucket_name)
+        tmp_file = os.path.join(self.tmp_dir, "tmp-" + os.path.basename(local_path))
+
+        if os.path.isfile(local_path):
+            return local_path
+        if not flocker:
+            with RedisLocker(locker_key, expire=expire):
+                if os.path.isfile(local_path):
+                    return local_path
+                self.logger.info(f"download (with dist locker:{locker_key}) {key} from oss to {local_path}")
+                oss2.resumable_download(self.bucket, key, tmp_file, progress_callback=progress_callback)
+
+                if os.path.isfile(local_path):
+                    return local_path
+
+                if os.path.isfile(tmp_file):
+                    shutil.move(tmp_file, local_path)
+                    return local_path
+                else:
+                    raise OSError(f'cannot download file from oss, {remoting_path}')
+        else:
+            f = None
+            try:
+                f = self.acquire_flock(remoting_path, local_path, timeout=expire)
+                if os.path.isfile(local_path):
+                    return local_path
+                self.logger.info(f"download (with file locker) {key} from oss to {local_path}")
+                for i in range(3):
+                    try:
+                        oss2.resumable_download(self.bucket, key, tmp_file, progress_callback=progress_callback)
+                        break
+                    except:
+                        time.sleep(1)
+                        continue
+
+                if os.path.isfile(local_path):
+                    return local_path
+
+                if os.path.isfile(tmp_file):
+                    shutil.move(tmp_file, local_path)
+                    return local_path
+                else:
+                    raise OSError(f'cannot download file from oss, {remoting_path}')
+            except:
+                raise
+            finally:
+                self.release_flock(f, remoting_path)

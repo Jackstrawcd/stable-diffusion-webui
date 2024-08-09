@@ -7,6 +7,7 @@
 # @Software: Hifive
 import abc
 import json
+import os.path
 import queue
 import time
 import typing
@@ -44,26 +45,29 @@ class DumpInfo:
             if isinstance(set_value, dict) and 'task_progress' in set_value:
                 logger.info(f"dumper task:{self.id} and progress {set_value['task_progress']}.")
 
-        db.update(
-            self.query,
-            self.set,
-            **self.kwargs
-        )
+        try:
+            db.update(
+                self.query,
+                self.set,
+                **self.kwargs
+            )
+        except:
+            logger.exception("cannot update data.")
 
 
-class TaskDumper(Thread):
+class AsyncTaskDumper(Thread):
     __singleton = None
 
     def __new__(cls, *args, **kwargs):
         if not cls.__singleton:
-            cls.__singleton = super(TaskDumper, cls).__new__(cls, *args, **kwargs)
+            cls.__singleton = super(AsyncTaskDumper, cls).__new__(cls, *args, **kwargs)
         return cls.__singleton
 
     def __init__(self, db):
         if not hasattr(db, 'update'):
             raise TypeError('db not found update function')
 
-        super(TaskDumper, self).__init__(name='task-dumper')
+        super(AsyncTaskDumper, self).__init__(name='task-dumper')
         self.db = db
         self.ip = pod_host() or get_host_ip()
         self.send_delay = 10
@@ -165,7 +169,7 @@ class TaskDumper(Thread):
         self._stop_flag = True
 
 
-class MongoTaskDumper(TaskDumper):
+class AsyncMongoTaskDumper(AsyncTaskDumper):
 
     def __init__(self, *args, **db_settings):
 
@@ -197,7 +201,7 @@ class MongoTaskDumper(TaskDumper):
             mgo.collect.create_index([("update_at", 1), ('expireAfterSeconds', doc_exp)])
 
         self.clean_time = 0
-        super(MongoTaskDumper, self).__init__(mgo)
+        super(AsyncMongoTaskDumper, self).__init__(mgo)
 
     def progress_to_info(self, task_progress: TaskProgress) -> DumpInfo:
         v = task_progress.to_dict()
@@ -240,7 +244,6 @@ class MongoTaskDumper(TaskDumper):
                     multi=False
                 )
 
-
             self.clean_time = now
 
     def write_images(self, task_progress: TaskProgress):
@@ -248,37 +251,64 @@ class MongoTaskDumper(TaskDumper):
             r = task_progress.result
             flatten_images = []
             index = 0
+
+            all_keys = {}
+            if 'all' not in r:
+                return
+            if 'samples' not in r and 'upscaler' not in r:
+                return
+
+            keys = r['all'].get('low') or r['all'].get('high') or []
+            for key in keys:
+                basename = os.path.basename(key)
+                if "403" in basename:
+                    continue
+                all_keys.update({basename: 1})
+
             if 'grids' in r:
                 for i, sample in enumerate(r['grids']['low']):
+                    basename = os.path.basename(sample)
+                    if basename not in all_keys:
+                        continue
                     t = {'task_id': task_progress.task.id, 'model_hash': task_progress.task['model_hash'],
                          'user_id': task_progress.task.user_id, 'create_at': task_progress.task['create_at'],
                          'task_type': task_progress.task.task_type, 'minor_type': task_progress.task.minor_type,
                          'group_id': "", 'index': index, 'low_image': sample, 'image_type': 'grid',
-                         'update_at': datetime.now(),
+                         'update_at': datetime.now(), 'user_role': task_progress.task.get('user_role', 0),
+                         'is_fast': task_progress.task.get('is_fast', False),
                          'high_image': r['grids']['high'][i]}
                     flatten_images.append(t)
                     index += 1
             if 'samples' in r:
                 for i, sample in enumerate(r['samples']['low']):
+                    basename = os.path.basename(sample)
+                    if basename not in all_keys:
+                        continue
                     t = {'task_id': task_progress.task.id, 'model_hash': task_progress.task['model_hash'],
                          'user_id': task_progress.task.user_id, 'create_at': task_progress.task['create_at'],
                          'task_type': task_progress.task.task_type, 'minor_type': task_progress.task.minor_type,
                          'group_id': "", 'index': index, 'low_image': sample, 'image_type': 'sample',
                          'high_image': r['samples']['high'][i],
-                         'seed': task_progress.task['all_seed'][i],
-                         'sub_seed': task_progress.task['all_sub_seed'][i],
+                         'seed': task_progress.task['all_seed'][i] if 'all_seed' in task_progress.task else 0,
+                         'sub_seed': task_progress.task['all_sub_seed'][i] if 'all_sub_seed' in task_progress.task else 0,
                          'update_at': datetime.now(),
+                         'is_fast': task_progress.task.get('is_fast', False),
+                         'user_role': task_progress.task.get('user_role', 0),
                          }
                     flatten_images.append(t)
                     index += 1
             if 'upscaler' in r:
                 for i, sample in enumerate(r['all']['low']):
+                    basename = os.path.basename(sample)
+                    if basename not in all_keys:
+                        continue
                     t = {'task_id': task_progress.task.id, 'model_hash': task_progress.task['model_hash'],
                          'user_id': task_progress.task.user_id, 'create_at': task_progress.task['create_at'],
                          'task_type': task_progress.task.task_type, 'minor_type': task_progress.task.minor_type,
                          'group_id': "", 'index': index, 'low_image': sample, 'image_type': 'sample',
                          'high_image': r['all']['high'][i],
                          'update_at': datetime.now(),
+                         'user_role': task_progress.task.get('user_role', 0),
                          }
                     flatten_images.append(t)
                     index += 1
@@ -287,11 +317,85 @@ class MongoTaskDumper(TaskDumper):
                 self.db.db['images'].insert_many(flatten_images)
 
 
+class MongoTaskDumper:
+
+    def __init__(self, **db_settings):
+        self.redis_pool = RedisPool(max_connections=1)
+        mgo = MongoClient(**db_settings or {})
+        mgo.collect.create_index('task_id', unique=True)
+        mgo.collect.create_index('status')
+        mgo.collect.create_index('task.user_id')
+        mgo.collect.create_index('task.create_at')
+        mgo.collect.create_index('task.minor_type')
+        mgo.collect.create_index('task.task_type')
+        mgo.collect.create_index('task.model_name')
+        mgo.collect.create_index('task.model_hash')
+
+        image_cols = mgo.db['images']
+        image_cols.create_index('task_id')
+        image_cols.create_index('user_id')
+        image_cols.create_index('create_at')
+        image_cols.create_index('minor_type')
+        image_cols.create_index('task_type')
+        image_cols.create_index('model_name')
+        image_cols.create_index('model_hash')
+        image_cols.create_index('image_type')
+        image_cols.create_index('group_id')
+        doc_exp = mongo_doc_expire_seconds()
+        if doc_exp > 0:
+            logger.warning(f"set mongo doc expire after {doc_exp} seconds!")
+            image_cols.create_index([("update_at", 1), ('expireAfterSeconds', doc_exp // 2)])
+            mgo.collect.create_index([("update_at", 1), ('expireAfterSeconds', doc_exp)])
+        self.cli = mgo
+        self.ip = pod_host() or get_host_ip()
+
+    def progress_to_info(self, task_progress: TaskProgress) -> DumpInfo:
+        v = task_progress.to_dict()
+        v.update(
+            {
+                "task_id": task_progress.task.id,
+                "ip": self.ip,
+                "update_at": datetime.now()
+            }
+        )
+
+        info = DumpInfo(
+            {"task_id": v['task_id']},
+            {'$set': v},
+            multi=False
+        )
+        return info
+
+    def dump_task_progress(self, task_progress: TaskProgress):
+        info = self.progress_to_info(task_progress)
+
+        self._set_cache(info)
+        info.update_db(self.cli)
+
+    def _set_cache(self, info: DumpInfo):
+        try:
+            rds = self.redis_pool.get_connection()
+            data = dict(((k, v) for (k, v) in info.set['$set'].items() if not isinstance(v, datetime)))
+            rds.set(info.id.replace("task_id=", ""), json.dumps(data), 1200)
+        except Exception as err:
+            logger.exception('cannot write to redis')
+
+    def close(self):
+        self.cli.close()
+        self.redis_pool.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
 dumper = None
 
 
 if cmd_opts.worker:
-    dumper = MongoTaskDumper()
+    dumper = AsyncMongoTaskDumper()
     dumper.start()
 
 

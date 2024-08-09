@@ -7,7 +7,7 @@
 # @Software: Hifive
 import os
 import typing
-from tools.wrapper import FuncResultLogWrapper
+from tools.wrapper import timed_lru_cache
 
 S3ImageBucket = "xingzhe-sdplus"
 S3ImagePath = "output/{uid}/{dir}/{name}"
@@ -49,9 +49,48 @@ Env_Worker_State_File = "WORKER_STATE_FILE_PATH"
 Env_GSS_Count_API = "GSS_COUNT_API"
 Env_HostName = "hostname"
 Env_TaskGroupQueueOnly = "WORKER_GROUP_QUEUE_ONLY"
+Env_TaskGroupQueueName = "WORKER_GROUP_QUEUE_NAME"
 Env_WorkerRunTrainRatio = "RUN_TRAIN_RATIO"
+# 不开启定期清除未使用模型文件
+Env_DontCleanModels = "DONT_CLEAN_MODELS"
+# 谛听审核APP KEY
+Env_DtAppKey = "DT_APPKEY"
+# 下载启用文件锁
+Env_DownloadLocker = "DOWNLOAD_LOCKER"
+# 维护模式key
+Env_Maintain = "MAINTAIN"
+# 单机多POD模型下共享文件路径
+# POD内相对路径
+Env_ShareDir = "SHARE_DIR"
+# 绝对路径
+# Env_AbsShareDir = "ABS_SHARE_DIR"
+# 接收器模式：0-多线程 1-单线程，默认0
+Env_RecvMode = "RECEIVER_MODE"
 
 cache = {}
+
+
+def get_value_from_env(k, default=None):
+    if k not in cache:
+        cache[k] = os.getenv(k) or default
+    return cache[k]
+
+
+def get_recv_mode():
+    return get_value_from_env(Env_RecvMode, 0)
+
+
+def get_share_dir():
+    share_dir = get_value_from_env(Env_ShareDir)
+    # abs_share_dir = get_value_from_env(Env_AbsShareDir)
+
+    return share_dir
+
+
+def enable_download_locker():
+    v = cache.get(Env_DownloadLocker, os.getenv(Env_DownloadLocker, '1'))
+    cache[Env_DownloadLocker] = v
+    return v == "1"
 
 
 def is_flexible_worker():
@@ -101,6 +140,10 @@ def is_task_group_queue_only():
     cache[Env_TaskGroupQueueOnly] = x
 
     return x == "1"
+
+
+def get_env_group_queue_name():
+    return os.getenv(Env_TaskGroupQueueName)
 
 
 def get_run_train_time_cfg():
@@ -171,6 +214,27 @@ def get_mongo_env() -> typing.Mapping[str, str]:
     return d
 
 
+def get_maintain_env():
+    return os.getenv(Env_Maintain, "maintain-default")
+
+
 def get_ticket():
     return os.getenv(Env_Ticket, -1)
+
+
+def get_pod_status_env():
+    return os.getenv("POD_STATUS", None)
+
+
+def set_pod_status_env(status):
+    os.environ["POD_STATUS"] = status
+    return
+
+
+def get_wait_task_env():
+    return os.getenv("WAIT_TASK", None)
+
+
+def set_wait_task_env(task_id):
+    os.environ["WAIT_TASK"] = task_id
 

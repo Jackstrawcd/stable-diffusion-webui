@@ -6,9 +6,11 @@
 # @File    : storage.py
 # @Software: Hifive
 import abc
+import hashlib
 import os
 import json
 import shutil
+import time
 import typing
 
 import s3fs
@@ -16,9 +18,13 @@ import requests
 import random
 import importlib.util
 from loguru import logger
+from tools.redis import dist_locker
 from tools.processor import MultiThreadWorker
 from multiprocessing import cpu_count
 from urllib.parse import urlparse, urlsplit
+from tools.locks import LOCK_EX, LOCK_NB, lock, unlock
+from tools.host import get_host_name, get_host_ip
+from functools import partial
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/22.0.1207.1 Safari/537.1"
@@ -77,7 +83,10 @@ def http_request(url, method='GET', headers=None, cookies=None, data=None, timeo
                 _headers['User-Agent'] = random.choice(USER_AGENTS)
             kwargs['headers'] = _headers
             if method == 'GET':
-                res = requests.get(url, data, **kwargs)
+                if data:
+                    query_string = '&'.join(["{}={}".format(k, v) for k, v in data.items()])
+                    url += '?' + query_string
+                res = requests.get(url, **kwargs)
             elif method == 'PUT':
                 res = requests.put(url, data, **kwargs)
             elif method == 'DELETE':
@@ -95,11 +104,27 @@ def http_request(url, method='GET', headers=None, cookies=None, data=None, timeo
     return res
 
 
+class FileLocker:
+
+    def __init__(self, file, mode='r', buffering=None, encoding=None, errors=None, newline=None, closefd=True,
+                 lock_flag=LOCK_EX):
+        self.f = open(file, mode, buffering, encoding, errors, newline, closefd)
+        self.flag = lock_flag
+
+    def __enter__(self):
+        lock(self.f, self.flag)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        unlock(self.f)
+        self.f.close()
+
+
 class FileStorage:
 
     def __init__(self):
         self.tmp_dir = os.path.join('tmp')
         os.makedirs(self.tmp_dir, exist_ok=True)
+        self.device_id = get_host_name() or get_host_ip()
 
     @property
     def logger(self):
@@ -108,6 +133,30 @@ class FileStorage:
     @abc.abstractmethod
     def download(self, remoting_path, local_path, progress_callback=None) -> str:
         raise NotImplementedError
+
+    def lock_download(self, remoting_path, local_path, progress_callback=None, expire=1800, flocker=True) -> str:
+        if os.path.isfile(local_path):
+            return local_path
+        if os.path.isfile(remoting_path):
+            return remoting_path
+        if flocker:
+            key = self.get_lock_key(remoting_path)
+            res = dist_locker(key, self.download, expire, args=[local_path], kwargs={
+                'progress_callback': progress_callback
+            })
+            return res
+        else:
+            f = None
+            try:
+                f = self.acquire_flock(remoting_path, local_path, timeout=expire)
+                if os.path.isfile(local_path):
+                    return local_path
+                res = self.download(remoting_path, local_path, progress_callback)
+                return res
+            except:
+                raise
+            finally:
+                self.release_flock(f, remoting_path)
 
     @abc.abstractmethod
     def name(self):
@@ -123,6 +172,88 @@ class FileStorage:
     def preview_url(self, remoting_path: str) -> str:
         raise NotImplementedError
 
+    def get_lock_key(self, keyname):
+        basename = os.path.basename(keyname)
+        md5 = hashlib.md5()
+        md5.update(keyname.encode())
+        hash_str = md5.hexdigest()[:8]
+        # 设备（机器）ID:文件名[远程路径HASH]
+        return f"{self.device_id}:{basename}[{hash_str}]"
+
+    def get_lock_filename(self, keyname):
+        arr = os.path.splitext(os.path.basename(keyname))
+        basename = arr[0]
+        md5 = hashlib.md5()
+        md5.update(keyname.encode())
+        hash_str = md5.hexdigest()[:8]
+        return os.path.join("models", "Stable-diffusion", f"{basename}[{hash_str}].lock")
+
+    def acquire_flock(self, keyname, local_path, block=True, timeout=-1):
+        lock_path = self.get_lock_filename(keyname)
+
+        f = open(lock_path, "wb+")
+        timeout = -1 if timeout is None else timeout
+
+        try:
+            ok = lock(f, LOCK_EX | LOCK_NB)
+            if not ok:
+                if not block:
+                    raise OSError("cannot get file lock")
+                start = time.time()
+                while 1:
+                    time.sleep(random.randint(2, 5))
+                    waite_time = int(time.time() - start)
+                    if waite_time % 4 == 0:
+                        logger.debug(
+                            f"acquire file locker:{lock_path}, timeout:{timeout} sec, wait time:{waite_time} sec")
+                    if timeout > 0 and waite_time > timeout:
+                        raise OSError(f"cannot download {keyname}: get file lock timeout")
+
+                    if os.path.isfile(local_path):
+                        atime = os.path.getatime(local_path)
+                        delay = int(time.time() - atime + 6)
+                        if delay > 0:
+                            time.sleep(delay)
+                            logger.debug(f"acquire file locker:{lock_path}, local file existed, sleep {delay} sec")
+                        os.popen(f'touch {local_path}')
+                        logger.debug(f"acquire file locker:{lock_path}, local file existed!")
+                        break
+
+                    f = open(lock_path, "wb+") if f is None else f
+                    ok = lock(f, LOCK_EX | LOCK_NB)
+                    if ok:
+                        logger.debug(f"get file locker:{lock_path}, waite time:{waite_time} sec!")
+                        break
+        except:
+            if f:
+                f.close()
+
+            raise
+        return f
+
+    def release_flock(self, f, keyname=None):
+        if not f:
+            return
+        unlock(f)
+        f.close()
+
+        if keyname and random.randint(0, 10) < 3:
+            lock_path = self.get_lock_filename(keyname)
+            dirname = os.path.dirname(lock_path)
+
+            for item in os.listdir(dirname):
+                full_path = os.path.join(dirname, item)
+                if os.path.isfile(full_path):
+                    _, ex = os.path.splitext(full_path)
+                    if ex != ".lock":
+                        continue
+                    try:
+                        ctime = os.path.getctime(full_path)
+                        if time.time() - ctime > 3600*8:
+                            os.remove(full_path)
+                    except:
+                        continue
+
     def multi_upload(self, local_remoting_pars: typing.Sequence[typing.Tuple[str, str]]):
         if local_remoting_pars:
             worker_count = cpu_count()
@@ -130,11 +261,14 @@ class FileStorage:
             w = MultiThreadWorker(local_remoting_pars, self.upload, worker_count)
             w.run()
 
-    def multi_download(self, remoting_loc_pairs: typing.Sequence[typing.Tuple[str, str]]):
+    def multi_download(self, remoting_loc_pairs: typing.Sequence[typing.Tuple[str, str]],
+                       with_locker=False, locker_exp=1800, flocker=True):
         if remoting_loc_pairs:
             worker_count = cpu_count()
             worker_count = worker_count if worker_count <= 4 else 4
-            w = MultiThreadWorker(remoting_loc_pairs, self.download, worker_count)
+            executor = self.download if not with_locker else partial(
+                self.lock_download, flocker=flocker, expire=locker_exp)
+            w = MultiThreadWorker(remoting_loc_pairs, executor, worker_count)
             w.run()
 
     def download_dir(self, remoting_dir: str, local_dir: str) -> bool:
@@ -198,21 +332,26 @@ class PrivatizationFileStorage(FileStorage):
         if 'http' not in remoting_path.lower():
             raise OSError(f'unsupported file:{remoting_path}')
 
-        filename = os.path.basename(remoting_path)
+        filename = os.path.basename(urlparse(remoting_path).path)
         filepath = os.path.join(self.tmp_dir, filename)
         if not os.path.isfile(filepath):
             self.logger.info(f"download url: {remoting_path}...")
-            resp = http_request(remoting_path)
-            if resp:
+            headers = {
+                'Accept-Language': 'zh-cn',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 
+            }
+            resp = http_request(remoting_path, headers=headers)
+            if resp:
                 if 'Content-Disposition' in resp.headers:
                     cd = resp.headers.get('Content-Disposition')
-                    map = dict((item.strip().split('=')[:2] for item in (item for item in cd.split(';') if '=' in item)))
+                    map = dict(
+                        (item.strip().split('=')[:2] for item in (item for item in cd.split(';') if '=' in item)))
                     if 'filename' in map:
                         filename = map['filename'].strip('"')
 
                 chunk_size = 512
-
                 self.logger.info(f"save to {filename} ...")
                 with open(filepath, 'wb') as f:
                     for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -221,7 +360,8 @@ class PrivatizationFileStorage(FileStorage):
 
                 if os.path.isdir(local_path):
                     local_path = os.path.join(local_path, filename)
-        shutil.move(filepath, local_path)
+        if os.path.isfile(filepath):
+            shutil.move(filepath, local_path)
         return local_path
 
     def upload(self, local_path, remoting_path) -> str:
@@ -237,5 +377,3 @@ class PrivatizationFileStorage(FileStorage):
 
     def preview_url(self, remoting_path: str) -> str:
         return remoting_path
-
-

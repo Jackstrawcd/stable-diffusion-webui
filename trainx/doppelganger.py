@@ -5,33 +5,32 @@
 # @Site    : 
 # @File    : doppelganger.py
 # @Software: Hifive
-import copy
+import math
+import typing
+import shutil
 import os.path
 import random
-import shutil
-import time
-import typing
-
 import numpy as np
-
+from loguru import logger
 from modules.shared import mem_mon as vram_mon
-from trainx.utils import get_tmp_local_path, Tmp, upload_files, detect_image_face
-from tools.file import zip_compress, zip_uncompress, find_files_from_dir
+from trainx.utils import Tmp, detect_image_face, upload_files
 from trainx.typex import DigitalDoppelgangerTask, Task, TrainLoraTask, PreprocessTask
 from sd_scripts.train_auto_xz import train_auto
-from trainx.lora import *
-
-
+from worker.task import Task, TaskStatus, TaskProgress, TrainEpoch
+from trainx.utils import calculate_sha256
+from modules.devices import torch_gc
 # class DigitalDoppelganger:
 
 
 def digital_doppelganger(job: Task, dump_func: typing.Callable = None):
     p = TaskProgress.new_prepare(job, 'prepare')
-    p.eta_relative = 41 * 60
+    p.eta_relative = len(job)
     yield p
 
     task = DigitalDoppelgangerTask(job)
-    p = TaskProgress.new_ready(job, 'ready preprocess', 40 * 60)
+    eta = int(len(task.image_keys) * 8.9 + 1416)
+    p = TaskProgress.new_ready(job, 'ready preprocess', 0)
+    p.eta_relative = eta
     yield p
 
     logger.debug(">> download images...")
@@ -52,13 +51,13 @@ def digital_doppelganger(job: Task, dump_func: typing.Callable = None):
         age = np.average([x[-1] for x in face_info])
         gender = '1girl' if np.sum([x[0] == 0 for x in face_info]) > len(face_info) / 2 else '1boy'
 
-        p = TaskProgress.new_running(job, 'train running.')
-        p.eta_relative = 35 * 60
+        p = TaskProgress.new_running(job, 'train running.', 1)
+        p.eta_relative = eta
         yield p
 
-        def train_progress_callback(progress):
+        def train_progress_callback(epoch, loss, num_train_epochs, progress):
             progress = progress if progress > 1 else progress * 100
-            if progress - p.task_progress >= 2:
+            if progress - p.task_progress >= 5:
 
                 free, total = vram_mon.cuda_mem_get_info()
                 logger.info(f'[VRAM] free: {free / 2 ** 30:.3f} GB, total: {total / 2 ** 30:.3f} GB')
@@ -73,8 +72,8 @@ def digital_doppelganger(job: Task, dump_func: typing.Callable = None):
                 logger.debug(f"previous eta:{previous_eta}, calculate eta:{p.eta_relative}")
                 if previous_eta < p.eta_relative:
                     epoch = progress // 10  # 控制的是10epoch
-                    eta_relative = 2100 - epoch * 60
-                    p.eta_relative = min(eta_relative, previous_eta-60)
+                    eta_relative = eta - epoch * 60
+                    p.eta_relative = min(eta_relative, previous_eta - 60)
                     logger.debug(f"===>>> new eta:{eta_relative}")
 
                 #  time_since_start = time.time() - shared.state.time_start
@@ -102,7 +101,7 @@ def digital_doppelganger(job: Task, dump_func: typing.Callable = None):
                 'material': None,
                 'models': [],
                 'gender': gender,
-                'age': int(age) if age else 20
+                'age': int(age) if age and not math.isnan(age) else 20
             }
 
             cover = task.get_model_cover_key()
@@ -114,7 +113,7 @@ def digital_doppelganger(job: Task, dump_func: typing.Callable = None):
             hash_file_path = os.path.join(dirname, sha256 + ex)
 
             shutil.move(out_path, hash_file_path)
-            key = upload_files(False, hash_file_path, dirname='models/digital/Lora')
+            key = upload_files(False, hash_file_path, dirname='models/digital/Lora', task_id=task.id)
             result['models'].append({
                 'key': key[0] if key else '',
                 'thumbnail_path': cover,
@@ -125,10 +124,13 @@ def digital_doppelganger(job: Task, dump_func: typing.Callable = None):
                 'train': result
             }, False)
             fp.train = p.train
+
             yield fp
         else:
             p = TaskProgress.new_failed(job, 'train failed(unknown errors)')
             yield p
+        print(f"remove image dir:{image_dir}")
+        shutil.rmtree(image_dir)
     else:
         p = TaskProgress.new_failed(job, 'train failed(cannot download images)')
         yield p

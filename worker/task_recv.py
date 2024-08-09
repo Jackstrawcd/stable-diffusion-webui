@@ -30,7 +30,8 @@ from modules.shared import mem_mon as vram_mon
 from apscheduler.schedulers.background import BackgroundScheduler
 from tools.environment import get_run_train_time_cfg, get_worker_group, get_gss_count_api, run_train_ratio, \
     Env_Run_Train_Time_Start, Env_Run_Train_Time_End, is_flexible_worker, get_worker_state_dump_path, \
-    is_task_group_queue_only
+    is_task_group_queue_only, get_maintain_env, get_env_group_queue_name, get_pod_status_env, set_pod_status_env
+from worker import graceful_exit
 
 try:
     from collections.abc import Iterable  # >=py3.10
@@ -44,10 +45,11 @@ TrainTaskQueueToken = 'train'
 UpscaleCoeff = 100 * 1000
 TaskScoreRange = (0, 100 * UpscaleCoeff)
 TaskTimeout = 20 * 3600 if not cmd_opts.train_only else 48 * 3600
-Tmp = 'tmp'
 SDWorkerZset = 'sd-workers'
 ElasticResWorkerFlag = "[ElasticRes]"
 TrainOnlyWorkerFlag = "[TrainOnly]"
+MaintainKey = get_maintain_env()
+MaintainReadyKey = MaintainKey + "-ready"
 
 
 def find_files_from_dir(directory, *args):
@@ -65,24 +67,6 @@ def find_files_from_dir(directory, *args):
             for f in find_files_from_dir(full_path, *extensions_):
                 yield f
             yield full_path
-
-
-def clean_tmp(expired_days=1):
-    if os.path.isdir(Tmp):
-        now = time.time()
-        files = [x for x in os.listdir(Tmp)]
-        for fn in files:
-            if not os.path.isfile(fn):
-                continue
-            mtime = os.path.getmtime(fn)
-            if now > mtime + expired_days * 24 * 3600:
-                try:
-                    if os.path.isdir(fn):
-                        shutil.rmtree(fn)
-                    else:
-                        os.remove(fn)
-                except Exception:
-                    logger.exception('cannot remove file!!')
 
 
 class TaskReceiverState(enum.Enum):
@@ -122,9 +106,9 @@ class TaskReceiverRecorder:
                 return int(time.time()) - d['timestamp']
 
 
-def register_worker(worker_info: typing.Mapping):
+def register_worker(worker_id: typing.Mapping):
     try:
-        worker_id = worker_info['worker_id']
+
         now = int(time.time())
         pool = RedisPool()
         conn = pool.get_connection()
@@ -132,16 +116,17 @@ def register_worker(worker_info: typing.Mapping):
             worker_id: now
         })
         conn.expire(SDWorkerZset, timedelta(hours=1))
-        conn.zremrangebyscore(SDWorkerZset,  now - 600, now)
+        conn.zremrangebyscore(SDWorkerZset, 0, now - 3600 * 24)
         pool.close()
     except:
-        pass
+        logger.exception("cannot register worker")
 
 
 class TaskReceiver:
 
     def __init__(self, recoder: CkptLoadRecorder, train_only: bool = False,
-                 task_received_callback: typing.Callable = None):
+                 task_received_callback: typing.Callable = None,
+                 before_pop_task: typing.Callable = None):
         self.release_flag = None
         self.model_recoder = recoder
         self.redis_pool = RedisPool()
@@ -151,8 +136,10 @@ class TaskReceiver:
         self.is_elastic = is_flexible_worker()
         self.recorder = TaskReceiverRecorder()
         self.group_id = get_worker_group()
-        self.task_score_limit = 5 if cmd_opts.lowvram else (10 if cmd_opts.medvram else -1)
+        # self.task_score_limit = 5 if cmd_opts.lowvram else (10 if cmd_opts.medvram else -1)
+        self.task_score_limit = -1
         self.task_received_callback = task_received_callback
+        self.before_pop_task = before_pop_task
 
         run_train_time_cfg = get_run_train_time_cfg()
         run_train_time_start = run_train_time_cfg[Env_Run_Train_Time_Start]
@@ -174,7 +161,7 @@ class TaskReceiver:
         self.timer = BackgroundScheduler()
 
         worker_info = self._worker_info()
-        self.timer.add_job(register_worker, 'interval', seconds=30, args=[worker_info])
+        self.timer.add_job(register_worker, 'interval', seconds=30, args=[worker_info['worker_id']])
         self.exception_ts = 0
         self.closed = False
         self.is_task_group_queue_only = is_task_group_queue_only()
@@ -183,6 +170,10 @@ class TaskReceiver:
         logger.info(
             f"worker id:{self.worker_id}, train work receive clock:"
             f"{self.run_train_time_start} - {self.run_train_time_end}")
+        self.group_queue_name = ""
+        if self.is_task_group_queue_only:
+            self.group_queue_name = get_env_group_queue_name() or worker_info['resource']
+            logger.warning(f"only search task queue by resource:{self.group_queue_name}")
 
     def _worker_id(self):
         info = self._worker_info()
@@ -192,14 +183,16 @@ class TaskReceiver:
     @timed_lru_cache(300)
     def _worker_info(self):
         group_id = get_worker_group()
-        gpu_names = '&'.join(GpuInfo().names)
+        gpu_info = GpuInfo()
+        gpu_names = '&'.join(gpu_info.names)
         nvidia_video_card_id = gpu_names
 
         # int(str(uuid.uuid1())[-4:], 16)
         hostname = get_host_name()
         # hostname = 'sdplus-saas-qa-568ff9745c-rcwm6'
         try:
-            int(hostname[-16:-6], 16)
+            x = hostname.split("-")[-2]
+            int(x, 16)
             hostname = 'Host:' + hostname
         except:
             hostname = None
@@ -225,7 +218,7 @@ class TaskReceiver:
             if is_flexible_worker():
                 raise OSError('elastic resource cannot run with train only mode')
         worker_id = f"{group_id}:{self.task_score_limit}.{nvidia_video_card_id}"
-        exec_train = self.train_only or self._can_gener_img_worker_run_train()
+        exec_train = self.train_only or self._can_gener_img_worker_run_train(worker_id)
         model_hash_list = self.model_recoder.history()
 
         return {
@@ -234,16 +227,10 @@ class TaskReceiver:
             'video_id': nvidia_video_card_id,
             'group': group_id,
             'max_task_score': self.task_score_limit,
-            'resource': f'{group_id}:{gpu_names}',
+            'resource': gpu_info.first_name.replace(' ', "-"),
             'exec_train_task': exec_train,
             'model_hash_list': model_hash_list,
         }
-
-    def _clean_tmp_files(self):
-        now = time.time()
-        if now - self.clean_tmp_time > 3600:
-            self.clean_tmp_time = now
-            clean_tmp()
 
     def _loaded_models(self):
         if self.model_recoder:
@@ -281,10 +268,12 @@ class TaskReceiver:
         '''
         搜索指定资源的队列。
         '''
-        info = self._worker_info()
-        resource_name = info['resource']
 
-        return self._get_queue_task(resource_name)
+        task = self._extract_queue_task(self.group_queue_name, 3)
+        if task:
+            return task
+
+        return None
 
     def _search_train_task(self):
         # 弹性不训练
@@ -299,13 +288,11 @@ class TaskReceiver:
                     if task:
                         return task
 
-    def _can_gener_img_worker_run_train(self):
+    def _can_gener_img_worker_run_train(self, worker_id=None):
         # 默认23点~凌晨5点(UTC 15~21)可以运行TRAIN
         utc = datetime.utcnow()
-
         if self.run_train_time_start <= utc.hour < self.run_train_time_end:
             logger.info(f"worker receive train task")
-
             group_workers = self.get_group_workers()
             group_id = get_worker_group()
             workers = group_workers.get(group_id) or []
@@ -334,8 +321,10 @@ class TaskReceiver:
                     run_train_workers = workers[:run_train_worker_num]
                 else:
                     run_train_workers = []
-
-                no_group_worker_id = self.worker_id.replace(group_id + ":", '')
+                if not worker_id:
+                    no_group_worker_id = self.worker_id.replace(group_id + ":", '')
+                else:
+                    no_group_worker_id = worker_id.replace(group_id + ":", '')
                 logger.info(f"run train task worker ids:{';'.join(run_train_workers)}, current id:{no_group_worker_id}")
                 run_train_worker_flag = no_group_worker_id in run_train_workers
                 free, total = vram_mon.cuda_mem_get_info()
@@ -352,6 +341,7 @@ class TaskReceiver:
         # redis > 6.2.0
         # meta = rds.getdel(task_id)
         if self.task_score_limit > 0:
+            task_id = task_id.decode('utf8') if isinstance(task_id, bytes) else task_id
             arr = task_id.split('_')
             if len(arr) == 2:
                 try:
@@ -366,11 +356,11 @@ class TaskReceiver:
         meta = rds.get(task_id)
         if meta:
             t = Task.from_json_str(meta)
+            t.setdefault("queue", queue_name)
             if t.is_train:
                 paralle_count = t.get('paralle_count', 0)
                 if paralle_count > 0:
                     can_exec = self.can_exec_train_task(t.user_id, paralle_count)
-
                     if not can_exec:
                         delay = 0
                         logger.info(f"repush task {t.id} to {queue_name} and score:{task_score + delay}")
@@ -391,6 +381,52 @@ class TaskReceiver:
             rds.setex(f"task:worker:{task_id}", timedelta(hours=2), self.worker_id)
             return t
 
+    def _check_cluster_status(self):
+        '''
+        检测集群服务状态，如果是维护状态就陷入睡眠
+        '''
+        # 维护就绪时间
+        current_timestamp = int(time.time())
+        isFirst = True
+        while 1:
+            try:
+                rds = self.redis_pool.get_connection()
+                flag = rds.get(MaintainKey) or "0"
+                awake_ts = int(flag)
+                if time.time() < awake_ts:
+                    time_array = time.localtime(awake_ts)
+                    date_time = time.strftime("%Y-%m-%d %H:%M:%S", time_array)
+                    # 维护就绪状态写入reids
+                    if isFirst:
+                        rds.zadd(MaintainReadyKey, {self.worker_id: current_timestamp})
+                        isFirst = False
+                    logger.info(f"[Maintain] task receiver sleeping till: {date_time}...")
+                    time.sleep(10)
+                else:
+                    # 如果是维护状态，并且维护结束，删除维护就绪
+                    if not isFirst:
+                        rds.zrem(MaintainReadyKey, self.worker_id)
+                    break
+            except Exception as err:
+                logger.warning(f"cannot got cluster status:{err}")
+                break
+
+    def _check_pod_status(self):
+        '''
+        检测pod服务状态，如果 pod 正在退出，则停止获取任务
+        '''            
+        status = get_pod_status_env()
+        if status == graceful_exit.TERMINATING_STATUS:
+            graceful_exit.set_event()
+            while 1 :
+                logger.info(f"pod terminating, task receiver stop ...")
+                time.sleep(10)
+        else:
+            return
+
+                
+
+
     def _extract_queue_task(self, queue_name: str, retry: int = 1):
         queue_name = queue_name.decode('utf8') if isinstance(queue_name, bytes) else queue_name
         rds = self.redis_pool.get_connection()
@@ -398,7 +434,7 @@ class TaskReceiver:
         locker = redis_lock.Lock(rds, "task-lock-" + queue_name, expire=10)
         locked = False
         try:
-            # logger.debug("===> acquire locker: task-lock-" + queue_name)
+            logger.debug("===> acquire locker: task-lock-" + queue_name)
             locker.acquire(blocking=True, timeout=3)
             locked = True
             # self._preload_task(queue_name)
@@ -412,6 +448,12 @@ class TaskReceiver:
                 task = None
                 if values:
                     names = [v[0] for v in values]
+                    # before receive task
+                    if callable(self.before_pop_task):
+                        r = self.before_pop_task(*names)
+                        if not r:
+                            continue
+
                     rds.zrem(queue_name, *names)
                     for name, score in values:
 
@@ -495,6 +537,8 @@ class TaskReceiver:
 
     def get_one_task(self, block: bool = True, sleep_time: float = 4) -> typing.Optional[Task]:
         while not self.closed:
+            self._check_cluster_status()
+            self._check_pod_status()
             st = time.time()
             if self.train_only:
                 task = self._search_train_task()
@@ -516,6 +560,8 @@ class TaskReceiver:
     def task_iter(self, sleep_time: float = 2) -> typing.Iterable[Task]:
         while not self.closed:
             try:
+                self._check_cluster_status()
+                self._check_pod_status()
                 st = time.time()
 
                 # 释放弹性资源，不再获取任务主动
@@ -537,10 +583,11 @@ class TaskReceiver:
                     yield task
                 else:
                     self.recorder.set_state(TaskReceiverState.Idle)
+                    if random.randint(0, 10) == 1:
+                        logger.info('receiver idle...')
 
                 wait = sleep_time - time.time() + st
                 if wait > 0:
-                    self._clean_tmp_files()
                     time.sleep(wait)
                 self.register_worker()
                 self.write_worker_state()
@@ -665,6 +712,9 @@ class TaskReceiver:
         rds.zadd(queue_name, {
             task_id: score
         })
+
+    def get_redis_cli(self):
+        return self.redis_pool.get_connection()
 
     def close(self):
         if self.closed:

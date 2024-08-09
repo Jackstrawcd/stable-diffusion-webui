@@ -68,11 +68,15 @@ class Txt2ImgTask(StableDiffusionProcessingTxt2Img):
                  hr_sampler_name: str = None,  # hr sampler
                  hr_prompt: str = None,  # hr prompt
                  hr_negative_prompt: str = None,  # hr negative prompt
-                 disable_ad_face: bool = False,  # 关闭默认的ADetailer face
+                 disable_ad_face: bool = True,  # 关闭默认的ADetailer face
                  enable_refiner: bool = False,  # 是否启用XLRefiner
                  refiner_switch_at: float = 0.2,  # XL 精描切换时机
                  refiner_checkpoint: str = None,  # XL refiner模型文件
                  **kwargs):
+        # "upcast_attn": false # 将交叉关注层向上转型到float32
+        #
+        # fast模式下关闭默认的AD插件
+        disable_ad_face = disable_ad_face or kwargs.get('is_fast', True)
         override_settings_texts = format_override_settings(override_settings_texts)
         override_settings = create_override_settings_dict(override_settings_texts)
 
@@ -94,8 +98,8 @@ class Txt2ImgTask(StableDiffusionProcessingTxt2Img):
         self.seed_resize_from_w = seed_resize_from_w
         self.seed_enable_extras = seed_enable_extras
         self.sampler_name = sampler_name
-        self.batch_size = batch_size
-        self.n_iter = n_iter
+        self.batch_size = batch_size if batch_size > 0 else 1
+        self.n_iter = n_iter if n_iter > 0 else 1
         self.steps = steps
         self.cfg_scale = cfg_scale
         self.width = width
@@ -193,6 +197,10 @@ class Txt2ImgTaskHandler(Img2ImgTaskHandler):
     def __init__(self):
         super(Txt2ImgTaskHandler, self).__init__()
         self.task_type = TaskType.Txt2Image
+        self.register(
+            (Txt2ImgMinorTaskType.Txt2Img, self._exec_txt2img),
+            (Txt2ImgMinorTaskType.RunControlnetAnnotator, exec_control_net_annotator)
+        )
 
     def _load_default_script_args(self):
         self.default_script_args = init_default_script_args(modules.scripts.scripts_txt2img)
@@ -265,14 +273,14 @@ class Txt2ImgTaskHandler(Img2ImgTaskHandler):
         yield progress
         shared.state.begin()
         # shared.state.job_count = process_args.n_iter * process_args.batch_size
-
+        inference_start = time.time()
         if process_args.selectable_scripts:
             processed = process_args.scripts.run(process_args, *process_args.script_args)
         else:
             processed = process_images(process_args)
         shared.state.end()
         process_args.close()
-
+        inference_time = time.time() - inference_start
         progress.status = TaskStatus.Uploading
         yield progress
 
@@ -281,16 +289,18 @@ class Txt2ImgTaskHandler(Img2ImgTaskHandler):
                                        process_args.outpath_grids,
                                        process_args.outpath_scripts,
                                        task.id,
-                                       inspect=process_args.kwargs.get("need_audit", False))
-
+                                       inspect=process_args.kwargs.get("need_audit", False),
+                                       detect_multi_face=process_args.kwargs.get("detect_multi_face", False),
+                                       forbidden_review=process_args.kwargs.get("forbidden_review", False))
+        images.update({'inference_time': inference_time})
         progress = TaskProgress.new_finish(task, images)
         progress.update_seed(processed.all_seeds, processed.all_subseeds)
 
         yield progress
 
-    def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
-        minor_type = Txt2ImgMinorTaskType(task.minor_type)
-        if minor_type <= Txt2ImgMinorTaskType.Txt2Img:
-            yield from self._exec_txt2img(task)
-        elif minor_type == Txt2ImgMinorTaskType.RunControlnetAnnotator:
-            yield from exec_control_net_annotator(task)
+    # def _exec(self, task: Task) -> typing.Iterable[TaskProgress]:
+    #     minor_type = Txt2ImgMinorTaskType(task.minor_type)
+    #     if minor_type <= Txt2ImgMinorTaskType.Txt2Img:
+    #         yield from self._exec_txt2img(task)
+    #     elif minor_type == Txt2ImgMinorTaskType.RunControlnetAnnotator:
+    #         yield from exec_control_net_annotator(task)
