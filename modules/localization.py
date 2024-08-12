@@ -35,3 +35,12 @@ def localization_js(current_localization_name: str) -> str:
                 errors.report(f"Error loading localization from {fn}", exc_info=True)
 
     return f"window.localization = {json.dumps(data)}"
+
+
+def list_localization_paths():
+    for k, v in localizations.items():
+        if isinstance(v, list):
+            for item in v:
+                yield k, item
+        else:
+            yield k, v

@@ -40,7 +40,6 @@ torch
 torchdiffeq==0.2.3
 torchsde==0.2.6
 transformers==4.30.2
-safetensors==0.3.1
 apscheduler
 loguru
 pycryptodome
