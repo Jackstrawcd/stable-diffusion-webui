@@ -99,6 +99,12 @@ class OssFileStorage(FileStorage):
             else:
                 time.sleep(1)
 
+    def delete(self, remoting_path) -> bool:
+        key = self.get_keyname(remoting_path, self.bucket_name)
+        self.logger.info(f"delete file:{remoting_path}")
+        resp = self.bucket.delete_object(key)
+        return 200 <= resp.status < 300
+
     def upload_content(self, remoting_path, content) -> str:
         # bucket, key = self.extract_buack_key_from_path(remoting_path)
         key = self.get_keyname(remoting_path, self.bucket_name)

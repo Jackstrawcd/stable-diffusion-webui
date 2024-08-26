@@ -172,6 +172,9 @@ class FileStorage:
     def preview_url(self, remoting_path: str) -> str:
         raise NotImplementedError
 
+    def delete(self, remoting_path) -> bool:
+        raise NotImplementedError
+
     def get_lock_key(self, keyname):
         basename = os.path.basename(keyname)
         md5 = hashlib.md5()

@@ -631,8 +631,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         image = np.array(image.convert("RGB"))
 
         if not isinstance(image, (Image.Image, np.ndarray)):
-            print("底图有错误")
-            return None
+            raise ValueError("底图有错误")
 
         # 将图像转换为灰度图
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -647,8 +646,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         # 遍历检测到的人脸
         # print(len(faces))
         if len(faces) != 2:
-            print(f"cannot detect face:{f}, result:{len(faces)}")
-            return None
+            raise ValueError(f"cannot detect, result:{len(faces)}")
 
         # white_background = np.full_like(image, (255, 255, 255), dtype=np.uint8)
 
