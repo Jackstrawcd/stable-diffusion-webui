@@ -312,7 +312,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         # 获取眼睛和嘴巴点位
         for face in faces:
             lmk = face.landmark_3d_68
-            lmk = np.round(lmk).astype(np.int)
+            lmk = np.round(lmk).astype(np.int_)
             for i in range(lmk.shape[0]):
                 # p = (lmk[i][0],lmk[i][1])
                 points.append(lmk[i][0])
@@ -524,7 +524,6 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
                 # t['width'] = 512
                 # t['height'] = 768 if img.height % 768 == 0 else 512  # 仅支持512和768两个分辨率
                 # img.close()
-
                 t['alwayson_scripts'] = get_alwayson_scripts(init_img, init_img_mask_path, denoising_strength)
                 processes.append(Txt2ImgTask.from_task(t, self.default_script_args))
                 tasks.append(t)

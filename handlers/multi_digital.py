@@ -445,7 +445,7 @@ class MultiGenPortraitHandler(Txt2ImgTaskHandler):
         # 获取眼睛和嘴巴点位
         for face in faces:
             lmk = face.landmark_3d_68
-            lmk = np.round(lmk).astype(np.int)
+            lmk = np.round(lmk).astype(np.int_)
             for i in range(lmk.shape[0]):
                 # p = (lmk[i][0],lmk[i][1])
                 points.append(lmk[i][0])

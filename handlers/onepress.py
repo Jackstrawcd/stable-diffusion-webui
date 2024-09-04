@@ -402,7 +402,7 @@ class RenditionTask(Txt2ImgTask):
         # 人脸对应：算出中心点，判别与目标点最近的一张脸的位置，进行交换
         source_point = []
         for _ in source_face:
-            box = _.bbox.astype(np.int)
+            box = _.bbox.astype(np.int_)
             source_point.append(((box[2] + box[0]) / 2, (box[3] + box[1]) / 2))
 
         # 交换人脸
@@ -412,7 +412,7 @@ class RenditionTask(Txt2ImgTask):
             models_path, providers=providers)
         result = target_img
         for _ in target_face:
-            box = _.bbox.astype(np.int)
+            box = _.bbox.astype(np.int_)
             point = ((box[2] + box[0]) / 2, (box[3] + box[1]) / 2)
             dis = [math.sqrt((point[0] - k[0]) ** 2 + (point[1] - k[1]) ** 2)
                    for k in source_point]

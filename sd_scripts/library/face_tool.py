@@ -50,7 +50,7 @@ def insightface_main_face(main_path, use_gpu=False):
         fq.quality = FaceQuality.MultiFace
         return faces, fq
 
-    box = faces[0].bbox.astype(np.int)
+    box = faces[0].bbox.astype(np.int_)
     width, height = box[2] - box[0], box[3] - box[1]
     if width * height < MinFaceImgPixels:
         fq.quality = FaceQuality.LowReso
