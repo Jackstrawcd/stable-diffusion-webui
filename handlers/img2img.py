@@ -416,14 +416,19 @@ class Img2ImgTaskHandler(TaskHandler):
         self._default_script_args_load_t = 0
         self._register()
 
-    def _refresh_default_script_args(self):
+    def _refresh_default_script_args(self, is_img2img=False):
         if time.time() - self._default_script_args_load_t > 3600 * 4:
-            self._load_default_script_args()
+            self._load_default_script_args(is_img2img)
 
-    def _load_default_script_args(self):
-        if not modules.scripts.scripts_img2img:
-            modules.scripts.scripts_img2img.initialize_scripts(is_img2img=True)
-        self.default_script_args = init_default_script_args(modules.scripts.scripts_img2img)
+    def _load_default_script_args(self, is_img2img=False):
+        if is_img2img:
+            if not modules.scripts.scripts_img2img:
+                modules.scripts.scripts_img2img.initialize_scripts(is_img2img=True)
+            self.default_script_args = init_default_script_args(modules.scripts.scripts_img2img)
+        else:
+            if not modules.scripts.scripts_txt2img:
+                modules.scripts.scripts_txt2img.initialize_scripts(is_img2img=False)
+            self.default_script_args = init_default_script_args(modules.scripts.scripts_txt2img)
         self._default_script_args_load_t = time.time()
 
     def _build_img2img_arg(self, progress: TaskProgress, refiner_checkpoint: str = None) -> Img2ImgTask:

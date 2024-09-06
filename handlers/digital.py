@@ -601,7 +601,7 @@ class DigitalTaskHandler(Img2ImgTaskHandler):
         base_model_path = self._get_local_checkpoint(task)
         load_sd_model_weights(base_model_path, task.model_hash)
         progress = TaskProgress.new_ready(task, f'model loaded, gen refine image...', 120)
-        self._refresh_default_script_args()
+        self._refresh_default_script_args(is_img2img=False)
         yield progress
 
         merge_task = True
