@@ -221,6 +221,11 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
                                        not disable_ad_face, enable_refiner, refiner_switch_at, refiner_checkpoint,
                                        seed, seed_enable_extras, subseed, subseed_strength, seed_resize_from_h,
                                        seed_resize_from_w)
+        if selectable_scripts:
+            self.script_args = script_args
+        else:
+            self.script_args = tuple(script_args)
+        self.scripts = i2i_script_runner
 
         self.sd_model = shared.sd_model
         self.outpath_samples = f"output/{user_id}/img2img/samples/"
@@ -256,7 +261,6 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
         self.override_settings = override_settings
         self.do_not_save_samples = False
         self.outpath_scripts = f"output/{user_id}/img2img/scripts/"
-        self.scripts = i2i_script_runner
         self.script_name = select_script_name
         self.base_model_path = base_model_path
         self.selectable_scripts = selectable_scripts
@@ -272,10 +276,6 @@ class Img2ImgTask(StableDiffusionProcessingImg2Img):
         self.refiner_switch_at = refiner_switch_at
         self.xl_refiner_model_path = refiner_checkpoint
 
-        if selectable_scripts:
-            self.script_args = script_args
-        else:
-            self.script_args = tuple(script_args)
 
         super(Img2ImgTask, self).__post_init__()
         # extra_generation_params 赋值必须得在post_init后，

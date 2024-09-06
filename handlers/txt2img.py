@@ -87,6 +87,8 @@ class Txt2ImgTask(StableDiffusionProcessingTxt2Img):
                                        not disable_ad_face, enable_refiner, refiner_switch_at, refiner_checkpoint,
                                        seed, seed_enable_extras, subseed, subseed_strength, seed_resize_from_h,
                                        seed_resize_from_w)
+        self.scripts = modules.scripts.scripts_txt2img
+        self.script_args = script_args
 
         self.sd_model = shared.sd_model
         self.prompt = prompt
@@ -120,8 +122,6 @@ class Txt2ImgTask(StableDiffusionProcessingTxt2Img):
         self.hr_sampler_name = hr_sampler_name
         self.hr_prompt = hr_prompt or ""
         self.hr_negative_prompt = hr_negative_prompt or ""
-        self.scripts = modules.scripts.scripts_txt2img
-        self.script_args = script_args
         self.script_name = select_script_name
         self.base_model_path = base_model_path
         self.selectable_scripts = selectable_scripts
