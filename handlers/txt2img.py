@@ -202,7 +202,7 @@ class Txt2ImgTaskHandler(Img2ImgTaskHandler):
             (Txt2ImgMinorTaskType.RunControlnetAnnotator, exec_control_net_annotator)
         )
 
-    def _load_default_script_args(self):
+    def _load_default_script_args(self, is_img2img=False):
         self.default_script_args = init_default_script_args(modules.scripts.scripts_txt2img)
         self._default_script_args_load_t = time.time()
 
