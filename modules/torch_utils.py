@@ -14,7 +14,10 @@ def get_param(model) -> torch.nn.Parameter:
 
     for param in model.parameters():
         return param
-
+    
+    # by default, we assume that the model dtype is torch.half
+    print(f"No parameters found in model {model!r}")
+    return torch.empty([], device = "cuda", dtype = torch.half)
     raise ValueError(f"No parameters found in model {model!r}")
 
 

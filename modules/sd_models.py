@@ -445,16 +445,37 @@ def load_model_weights(model, checkpoint_info: CheckpointInfo, state_dict, timer
         sd_models_xl.extend_sdxl(model)
 
     if model.is_ssd:
-        sd_hijack.model_hijack.convert_sdxl_to_ssd(model)
+        try:
+            sd_hijack.model_hijack.convert_sdxl_to_ssd(model)
+        except Exception as e:
+            print(f"Failed to convert SDXL to SSD: {e}")
 
     if shared.opts.sd_checkpoint_cache > 0:
         # cache newly loaded model
-        checkpoints_loaded[checkpoint_info] = state_dict.copy()
+        checkpoints_loaded[checkpoint_info] = dict([(k, v.cuda().half().cpu()) if v.dtype != torch.half else (k, v.cpu()) for k, v in state_dict.items()])
 
     if hasattr(model, "before_load_weights"):
         model.before_load_weights(state_dict)
 
+    # we have to use ori_state_dict to store the weight
+    ori_state_dict = dict([x for x in state_dict.items()])
     model.load_state_dict(state_dict, strict=False)
+    state_dict = ori_state_dict
+    old_title = None
+    if hasattr(model, "sd_checkpoint_info"):
+        old_title = model.sd_checkpoint_info.title
+    if hasattr(shared.opts, 'use_aiacctorch') and shared.opts.use_aiacctorch:
+        if hasattr(model.model, "diffusion_model") and "aiacc" in str(type(model.model.diffusion_model)):
+            unet_weight = dict([(x.split("model.diffusion_model.")[1], y) for x, y in state_dict.items() if x.startswith("model.diffusion_model.")])
+            # if not have weight, just use old weight
+            if len(unet_weight) == 0:
+                unet_weight = dict([(x.split("model.diffusion_model.")[1], y) for x, y in model.state_dict().items() if x.startswith("model.diffusion_model.")])
+            if len(unet_weight) == 0:
+                print(f"skip load for aiacc, because the model is broken")
+            elif not model.model.diffusion_model.reload_weight_with_name(checkpoint_info.title, unet_weight, old_title):
+                print(f"aiacc failed to reload model {checkpoint_info.title}")
+                model_new = load_model(checkpoint_info, already_loaded_state_dict=state_dict, load_only=True)
+                model.model = model_new.model
     timer.record("apply weights to model")
 
     if hasattr(model, "after_load_weights"):
@@ -802,13 +823,13 @@ def get_obj_from_str(string, reload=False):
     return getattr(importlib.import_module(module, package=None), cls)
 
 
-def load_model(checkpoint_info=None, already_loaded_state_dict=None):
+def load_model(checkpoint_info=None, already_loaded_state_dict=None, load_only=False):
     from modules import sd_hijack
     checkpoint_info = checkpoint_info or select_checkpoint()
 
     timer = Timer()
 
-    if model_data.sd_model:
+    if model_data.sd_model and not load_only:
         send_model_to_trash(model_data.sd_model)
         model_data.sd_model = None
         devices.torch_gc()
@@ -819,7 +840,7 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
         state_dict = already_loaded_state_dict
     else:
         state_dict = get_checkpoint_state_dict(checkpoint_info, timer)
-
+    sd_hijack.undo_optimizations()
     checkpoint_config = sd_models_config.find_checkpoint_config(state_dict, checkpoint_info)
     clip_is_included_into_sd = any(x for x in [sd1_clip_weight, sd2_clip_weight, sdxl_clip_weight, sdxl_refiner_clip_weight] if x in state_dict)
 
@@ -861,8 +882,11 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
         }
 
     with sd_disable_initialization.LoadStateDictOnMeta(state_dict, device=model_target_device(sd_model), weight_dtype_conversion=weight_dtype_conversion):
-        load_model_weights(sd_model, checkpoint_info, state_dict, timer)
-
+        if load_only:
+            with SkipWritingToConfig():
+                load_model_weights(sd_model, checkpoint_info, state_dict, timer)
+        else:
+            load_model_weights(sd_model, checkpoint_info, state_dict, timer)
     timer.record("load weights from state dict")
 
     send_model_to_device(sd_model)
@@ -873,9 +897,15 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
     timer.record("hijack")
 
     sd_model.eval()
+    # ======== aliyun 1.10.0 ========
+    if load_only:
+        print(f"Model loaded in {timer.summary()}.")
+        return sd_model
+    # ================================
     model_data.set_sd_model(sd_model)
-    model_data.was_loaded_at_least_once = True
-
+    # ======== aliyun 1.10.0 ========
+    # model_data.was_loaded_at_least_once = True
+    # ================================
     sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings(
         force_reload=True)  # Reload embeddings after model load as they may or may not fit the model
 
@@ -891,6 +921,7 @@ def load_model(checkpoint_info=None, already_loaded_state_dict=None):
     timer.record("calculate empty prompt")
 
     print(f"Model loaded in {timer.summary()}.")
+    model_data.was_loaded_at_least_once = True
 
     return sd_model
 
@@ -984,7 +1015,12 @@ def reload_model_weights(sd_model=None, info=None, forced_reload=False):
         send_model_to_cpu(sd_model)
         sd_hijack.model_hijack.undo_hijack(sd_model)
 
-    state_dict = get_checkpoint_state_dict(checkpoint_info, timer)
+    try:
+        state_dict = get_checkpoint_state_dict(checkpoint_info, timer)
+    except Exception as e:
+        print(f"failed to get_checkpoint_state_dict because of {get_checkpoint_state_dict}")
+        sd_model.to(devices.get_optimal_device())
+        raise e
 
     checkpoint_config = sd_models_config.find_checkpoint_config(state_dict, checkpoint_info)
 

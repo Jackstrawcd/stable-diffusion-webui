@@ -45,6 +45,29 @@ sgm_patched_forward = sd_unet.create_unet_forward(sgm.modules.diffusionmodules.o
 sgm_original_forward = patches.patch(__file__, sgm.modules.diffusionmodules.openaimodel.UNetModel, "forward", sgm_patched_forward)
 
 
+ENABLE_AIACC_OPT_GPU_CAPABILITY = None
+
+
+def get_gpu_capability():
+    import pynvml
+    pynvml.nvmlInit()
+    gpu_count = pynvml.nvmlDeviceGetCount()
+    major = 0
+    minor = 0
+    for i in range(min(1,gpu_count)):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        name = pynvml.nvmlDeviceGetName(handle)
+        arch = pynvml.nvmlDeviceGetArchitecture(handle)
+        major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+        print(f"GPU {i}: {name}, Architecture: {arch}, SM Version {major}.{minor}")
+    return major, minor
+
+
+if ENABLE_AIACC_OPT_GPU_CAPABILITY is None:
+    GPU_CAPABILITY = get_gpu_capability()
+    ENABLE_AIACC_OPT_GPU_CAPABILITY = GPU_CAPABILITY[0]+GPU_CAPABILITY[1]/10.0 >= 7.5
+
+
 def list_optimizers():
     new_optimizers = script_callbacks.list_optimizers_callback()
 
@@ -77,6 +100,12 @@ def apply_optimizations(option=None):
         current_optimizer = None
 
     selection = option or shared.opts.cross_attention_optimization
+    # when enable aiacctorch, we force enable the xformers
+    # only support in ['a10', '3090', 'a100', ]
+    if ENABLE_AIACC_OPT_GPU_CAPABILITY and hasattr(shared.opts, 'use_aiacctorch') and shared.opts.use_aiacctorch:
+        new_selection = 'xformers'
+        if len([x for x in optimizers if x.title() == new_selection]) > 0:
+            selection = new_selection
     if selection == "Automatic" and len(optimizers) > 0:
         matching_optimizer = next(iter([x for x in optimizers if x.cmd_opt and getattr(shared.cmd_opts, x.cmd_opt, False)]), optimizers[0])
     else:

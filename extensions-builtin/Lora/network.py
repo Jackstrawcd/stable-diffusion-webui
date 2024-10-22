@@ -156,7 +156,8 @@ class NetworkModule:
         self.scale = weights.w["scale"].item() if "scale" in weights.w else None
 
         self.dora_scale = weights.w.get("dora_scale", None)
-        self.dora_norm_dims = len(self.shape) - 1
+        if self.dora_scale is not None:
+            self.dora_norm_dims = len(self.shape) - 1
 
     def multiplier(self):
         if 'transformer' in self.sd_key[:20]:

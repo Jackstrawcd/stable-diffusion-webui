@@ -71,6 +71,9 @@ def single_sample_to_image(sample, approximation=None):
 
 
 def decode_first_stage(model, x):
+    # fix bug when vae is not match the dtype
+    if model.first_stage_model.dtype!= devices.dtype_vae:
+        model.first_stage_model.to(devices.dtype_vae)
     x = x.to(devices.dtype_vae)
     approx_index = approximation_indexes.get(opts.sd_vae_decode_method, 0)
     return samples_to_images_tensor(x, approx_index, model)

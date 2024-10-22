@@ -49,3 +49,4 @@ models/
 stable-diffusion-webui/
 
 extensions/
+localizations/*

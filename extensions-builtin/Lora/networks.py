@@ -17,7 +17,6 @@ import network_oft
 
 import torch
 from typing import Union
-
 from modules import shared, devices, sd_models, errors, scripts, sd_hijack
 import modules.textual_inversion.textual_inversion as textual_inversion
 import modules.models.sd3.mmdit
@@ -159,7 +158,7 @@ def load_network(name, network_on_disk):
     net = network.Network(name, network_on_disk)
     net.mtime = os.path.getmtime(network_on_disk.filename)
 
-    sd = sd_models.read_state_dict(network_on_disk.filename)
+    sd = sd_models.read_state_dict(network_on_disk.filename, map_location="cpu")
 
     # this should not be needed but is here as an emergency fix for an unknown error people are experiencing in 1.2.0
     if not hasattr(shared.sd_model, 'network_layer_mapping'):
@@ -288,6 +287,10 @@ def load_networks(names, te_multipliers=None, unet_multipliers=None, dyn_dims=No
         for emb_name, embedding in net.bundle_embeddings.items():
             if embedding.loaded:
                 emb_db.register_embedding_by_name(None, shared.sd_model, emb_name)
+    if hasattr(shared.sd_model.model, 'need_reload_lora'):
+        if shared.sd_model.model.need_reload_lora() and hasattr(shared.sd_model, "network_layer_mapping"):
+            del shared.sd_model.network_layer_mapping
+            already_loaded.clear()
 
     loaded_networks.clear()
 

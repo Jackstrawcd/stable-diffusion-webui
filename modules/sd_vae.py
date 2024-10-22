@@ -6,6 +6,7 @@ from modules import paths, shared, devices, script_callbacks, sd_models, extra_n
 
 import glob
 from copy import deepcopy
+import inspect
 
 
 vae_path = os.path.abspath(os.path.join(paths.models_path, "VAE"))
@@ -241,7 +242,25 @@ def load_vae(model, vae_file=None, vae_source="from unknown source"):
 
 # don't call this from outside
 def _load_vae_dict(model, vae_dict_1):
+    # if we are trying to load vae, we need to replace all forward to avoid load error
+    temp_dict = None
+    sd_dict = None
+    file_name = inspect.getfile(model.first_stage_model.load_state_dict)
+    if "sd_disable_initialization.py" in file_name:
+        import gc
+        load_state_dict_meta_class = [
+            obj for obj in gc.get_objects()
+            if "LoadStateDictOnMeta" in str(type(obj))
+        ]
+        if len(load_state_dict_meta_class) == 1:
+            sd_dict = load_state_dict_meta_class[0].state_dict
+            temp_dict = dict([(x,y) for x,y in sd_dict.items()])
+            sd_dict.clear()
     model.first_stage_model.load_state_dict(vae_dict_1)
+    # and we need to copy back the weights
+    if sd_dict is not None and temp_dict is not None:
+        sd_dict.update(temp_dict)
+        del temp_dict
     model.first_stage_model.to(devices.dtype_vae)
 
 

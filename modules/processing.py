@@ -182,6 +182,7 @@ class StableDiffusionProcessing:
     disable_extra_networks: bool = False
     firstpass_image: Image = None
 
+
     scripts_value: scripts.ScriptRunner = field(default=None, init=False)
     script_args_value: list = field(default=None, init=False)
     scripts_setup_complete: bool = field(default=False, init=False)

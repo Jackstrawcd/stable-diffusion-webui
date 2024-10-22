@@ -1,7 +1,6 @@
 import base64
 import io
 import time
-
 import gradio as gr
 from pydantic import BaseModel, Field
 
@@ -36,6 +35,7 @@ def finish_task(id_task):
     finished_tasks.append(id_task)
     if len(finished_tasks) > 16:
         finished_tasks.pop(0)
+
 
 def create_task_id(task_type):
     N = 7

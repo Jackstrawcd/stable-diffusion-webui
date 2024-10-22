@@ -177,7 +177,10 @@ def upscale_2(
     param = torch_utils.get_param(model)
     tensor = pil_image_to_torch_bgr(img).to(dtype=param.dtype).unsqueeze(0)  # add batch dimension
 
-    with torch.no_grad():
+    # ======== aliyun 1.10.0 ========
+    # with torch.no_grad():
+    # ================================
+    with torch.inference_mode():
         output = tiled_upscale_2(
             tensor,
             model,

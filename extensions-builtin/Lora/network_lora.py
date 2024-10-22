@@ -37,8 +37,10 @@ class NetworkModuleLora(network.NetworkModule):
         if weight is None and none_ok:
             return None
 
-        is_linear = type(self.sd_module) in [torch.nn.Linear, torch.nn.modules.linear.NonDynamicallyQuantizableLinear, torch.nn.MultiheadAttention, modules.models.sd3.mmdit.QkvLinear]
-        is_conv = type(self.sd_module) in [torch.nn.Conv2d]
+        is_linear = type(self.sd_module) in [torch.nn.Linear, torch.nn.modules.linear.NonDynamicallyQuantizableLinear, torch.nn.MultiheadAttention, modules.models.sd3.mmdit.QkvLinear] \
+                    or "dummy_class" in str(type(self.sd_module)) and len(weight.shape) == 2
+        is_conv = type(self.sd_module) in [torch.nn.Conv2d] \
+                  or "dummy_class" in str(type(self.sd_module)) and len(weight.shape) == 4 and (weight.shape[2:] == (3, 3) or weight.shape[2:] == (1, 1))
 
         if is_linear:
             weight = weight.reshape(weight.shape[0], -1)
@@ -48,7 +50,12 @@ class NetworkModuleLora(network.NetworkModule):
                 weight = weight.reshape(weight.shape[0], -1, 1, 1)
 
             if weight.shape[2] != 1 or weight.shape[3] != 1:
-                module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], self.sd_module.kernel_size, self.sd_module.stride, self.sd_module.padding, bias=False)
+                if not hasattr(self.sd_module, "kernel_size"):
+                    assert(weight.shape[3] == 3)
+                    assert(weight.shape[2] == 3)
+                    module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], (3, 3), bias=False)
+                else:
+                    module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], self.sd_module.kernel_size, self.sd_module.stride, self.sd_module.padding, bias=False)
             else:
                 module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], (1, 1), bias=False)
         elif is_conv and key == "lora_mid.weight":

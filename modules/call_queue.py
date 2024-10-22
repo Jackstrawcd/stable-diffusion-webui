@@ -73,6 +73,10 @@ def wrap_gradio_call_no_job(func, extra_outputs=None, add_stats=False):
         try:
             res = list(func(*args, **kwargs))
         except Exception as e:
+            if shared.cmd_opts.stop_when_error:
+                print(e)
+                import os
+                os._exit(1)
             # When printing out our debug argument list,
             # do not print out more than a 100 KB of text
             max_debug_str_len = 131072
@@ -96,7 +100,7 @@ def wrap_gradio_call_no_job(func, extra_outputs=None, add_stats=False):
         elapsed = time.perf_counter() - t
         elapsed_m = int(elapsed // 60)
         elapsed_s = elapsed % 60
-        elapsed_text = f"{elapsed_s:.1f} sec."
+        elapsed_text = f"{elapsed_s:.2f} sec."
         if elapsed_m > 0:
             elapsed_text = f"{elapsed_m} min. "+elapsed_text
 
